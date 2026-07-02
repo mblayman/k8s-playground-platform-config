@@ -1,0 +1,28 @@
+[tasks."kind:create"]
+description = "Create the local kind cluster"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--config <config>" help="kind cluster config path" default="clusters/kind/cluster.yaml"
+'''
+run = "kind create cluster --name {{ usage.name }} --config {{ usage.config }}"
+
+[tasks."kind:delete"]
+description = "Delete the local kind cluster"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = "kind delete cluster --name {{ usage.name }}"
+
+[tasks."kind:nodes"]
+description = "List Kubernetes nodes"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = "kubectl --context kind-{{ usage.name }} get nodes -o wide"
+
+[tasks."kind:status"]
+description = "Show kind clusters and nodes"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = "kind get clusters && kubectl --context kind-{{ usage.name }} get nodes -o wide"
