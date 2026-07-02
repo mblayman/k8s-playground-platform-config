@@ -16,6 +16,31 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Observability: Prometheus, Grafana, Kiali
 - Policy: Istio mTLS and AuthorizationPolicy first; Kubernetes NetworkPolicy later
 
+## Current Progress
+
+- Decided to keep kind bootstrap configuration in this repo for now instead of creating a separate infrastructure repo.
+- Decided that a future infrastructure repo should be reserved for Terraform/OpenTofu and cloud-provider resources such as IAM, managed Kubernetes clusters, DNS zones, and cloud networking.
+- Created `clusters/kind/cluster.yaml` for a multi-node kind cluster with 1 control-plane node and 2 worker nodes.
+- Created top-level `mise.toml` as the command home for local workflows.
+- Added `mise` tasks for kind cluster create, delete, node listing, and status checks.
+- Removed the kind README command file in favor of `mise` tasks.
+
+Current local cluster tasks:
+
+```sh
+mise run kind:create
+mise run kind:delete
+mise run kind:nodes
+mise run kind:status
+```
+
+The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
+
+```sh
+kind delete cluster --name k8s-playground
+kubectl --context kind-k8s-playground get nodes -o wide
+```
+
 ## Explicit Non-Goals For First Iteration
 
 - No Cilium
@@ -62,6 +87,16 @@ Initial shape:
 1 control-plane node
 2 worker nodes
 ```
+
+Current config path:
+
+```text
+clusters/kind/cluster.yaml
+```
+
+The control-plane node runs the Kubernetes control-plane components, such as the API server, scheduler, controller manager, and etcd. Worker nodes are where ordinary workloads should generally run.
+
+The control-plane node is still a Kubernetes `Node`, but it normally has a `NoSchedule` taint so normal application pods avoid it unless they explicitly tolerate that taint. This gives us a more realistic cluster shape without requiring every workload to specify node placement manually.
 
 This allows testing of:
 
@@ -203,6 +238,8 @@ Healthcare/security caution:
 ## Suggested Repository Layout
 
 ```text
+mise.toml
+
 clusters/
   kind/
     cluster.yaml
@@ -241,7 +278,7 @@ argocd/
 
 ## Implementation Order
 
-1. Create a new multi-node kind cluster.
+1. Create a new multi-node kind cluster config. Completed: `clusters/kind/cluster.yaml`.
 2. Install MetalLB or cloud-provider-kind.
 3. Install cert-manager.
 4. Install Istio sidecar mode.
@@ -302,3 +339,10 @@ Initial app resources:
 - What local domain should be used for apps?
 - Should Argo CD manage platform components immediately, or should the first install be manual and then codified?
 - Should observability be installed before or after the first app is deployed?
+
+## Closed Decisions
+
+- Do not create a separate infrastructure repo yet for the kind phase.
+- Keep local kind cluster configuration in this repo under `clusters/kind/`.
+- Keep platform Kubernetes resources such as MetalLB in this repo rather than a future infrastructure repo.
+- Use top-level `mise.toml` for local operator tasks instead of command snippets in per-directory READMEs.
