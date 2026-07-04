@@ -28,6 +28,9 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided the first externally reachable app version may use a direct `Service` of type `LoadBalancer` with no TLS, then evolve to Istio ingress and Gateway API later.
 - Decided not to use Argo CD for the very first bring-up. The initial kind, MetalLB, and tracer app path should be driven by local `mise` tasks and `kubectl` so early failures are easy to debug.
 - Decided to introduce Argo CD immediately after the first LoadBalancer tracer bullet is working, then have Argo adopt/manage MetalLB and the tracer app before adding cert-manager, Istio, and observability.
+- Decided to use MetalLB layer 2 mode for kind. BGP mode is out of scope because this playground does not need to model bare-metal router peering.
+- Decided the MetalLB address pool should be derived from the actual Docker `kind` network during bring-up instead of hard-coding a subnet. Repeated cluster rebuilds and different host machines should remain automatable.
+- Decided to defer local domain name setup. The first tracer bullet should validate direct access by MetalLB-assigned IP.
 
 Current local cluster tasks:
 
@@ -117,6 +120,25 @@ This allows testing of:
 Use MetalLB for LoadBalancer support.
 
 We are intentionally not using cloud-provider-kind. The playground should model the more general Kubernetes `Service` type `LoadBalancer` behavior that applies outside of kind-specific tooling.
+
+Use MetalLB layer 2 mode.
+
+Layer 2 mode is the right fit for kind because it only needs an `IPAddressPool` and an `L2Advertisement`. BGP mode is unnecessary for this playground because it would require router/BGP peer configuration and would distract from the main learning path.
+
+The MetalLB `IPAddressPool` should be generated from the Docker `kind` network at bring-up time rather than hard-coded. On this machine, the current Docker `kind` network is `172.21.0.0/16`, but that should be treated as discovered state, not a portable constant.
+
+The bring-up automation should:
+
+1. Ensure the kind cluster exists.
+2. Inspect the Docker `kind` network subnet.
+3. Choose a small high address range from that subnet for MetalLB.
+4. Render/apply the MetalLB `IPAddressPool` and `L2Advertisement`.
+
+For example, if the Docker `kind` network is `172.21.0.0/16`, a reasonable generated pool would be:
+
+```text
+172.21.255.200-172.21.255.250
+```
 
 LoadBalancer support should be installed before Istio because it gives us a simple external-access validator. The first tracer-bullet version of `k8s-playground-service` can be exposed directly with a temporary `Service` of type `LoadBalancer`.
 
@@ -242,6 +264,14 @@ App-owned resources:
 The app should not expose itself directly with NodePort.
 
 The temporary direct `LoadBalancer` service is acceptable only as an early tracer bullet. The target state is external traffic through Istio ingress gateway and Gateway API routing.
+
+### Local Domain Names
+
+Defer local domain name setup.
+
+The first tracer bullet should be accessed directly by its MetalLB-assigned IP address. This avoids premature decisions about local wildcard DNS, `/etc/hosts`, or external wildcard DNS helpers.
+
+Before adopting local domains, evaluate whether the DNS solution should live outside the cluster, be handled by the host, or use an external wildcard DNS helper. Avoid making local DNS a prerequisite for the early platform path.
 
 ### Observability
 
@@ -419,6 +449,9 @@ Later app resources after Istio is introduced:
 - Use top-level `mise.toml` for local operator tasks instead of command snippets in per-directory READMEs.
 - Deploy a rudimentary app before Istio so there is always a simple validator for platform changes.
 - Use MetalLB for kind LoadBalancer support and do not use cloud-provider-kind.
+- Use MetalLB layer 2 mode and do not use BGP mode.
+- Generate the MetalLB IP address pool from the Docker `kind` network during bring-up rather than hard-coding a subnet.
+- Defer local domain name and wildcard DNS setup. Use direct MetalLB IPs for the first tracer bullet.
 - Do not use Argo CD for the first bring-up. Use local tasks for kind, MetalLB, and the first tracer app.
 - Introduce Argo CD immediately after the direct LoadBalancer tracer bullet works.
 - Have Argo CD adopt/manage MetalLB and the tracer app before adding cert-manager, Istio, and observability.
