@@ -26,6 +26,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Removed the kind README command file in favor of `mise` tasks.
 - Decided to use `k8s-playground-service` as an early tracer bullet before installing Istio.
 - Decided the first externally reachable app version may use a direct `Service` of type `LoadBalancer` with no TLS, then evolve to Istio ingress and Gateway API later.
+- Decided not to use Argo CD for the very first bring-up. The initial kind, MetalLB, and tracer app path should be driven by local `mise` tasks and `kubectl` so early failures are easy to debug.
+- Decided to introduce Argo CD immediately after the first LoadBalancer tracer bullet is working, then have Argo adopt/manage MetalLB and the tracer app before adding cert-manager, Istio, and observability.
 
 Current local cluster tasks:
 
@@ -243,19 +245,50 @@ The temporary direct `LoadBalancer` service is acceptable only as an early trace
 
 ### Observability
 
-Start with the mature Istio observability stack:
+Layer observability on at the end, after the core platform path is working.
+
+Start with the mature Istio observability stack when that phase begins:
 
 - Prometheus
 - Grafana
 - Kiali
 
-Add tracing later after the core platform is stable.
+Do not make observability part of the early success criteria. The main learning path is the incremental addition of platform layers, not deep inspection of a frequently changing app.
+
+Add tracing after metrics and mesh topology are working.
 
 Healthcare/security caution:
 
 - Do not log PHI in URLs, headers, labels, traces, metrics, or access logs.
 - Be careful with high-cardinality labels.
 - Review what telemetry leaves the cluster.
+
+### GitOps And Argo CD
+
+Do not use Argo CD for the very first bring-up.
+
+The first working path should be operator-driven from local `mise` tasks:
+
+```text
+kind cluster -> MetalLB -> tracer app -> external smoke test
+```
+
+This keeps the first debugging loop simple. If the tracer app is not reachable, the problem space is limited to the cluster, MetalLB, Kubernetes Services, and the app manifests.
+
+After the tracer bullet works, introduce Argo CD and have it adopt/manage the resources that were proven manually:
+
+```text
+working tracer bullet -> install Argo CD -> Argo manages MetalLB and app -> add platform layers through Argo
+```
+
+Argo CD should become the steady-state manager before installing the more complex platform layers:
+
+- cert-manager
+- Istio
+- observability
+- evolved app configuration
+
+This gives us both a simple early bootstrap and a GitOps-managed platform before the configuration graph becomes complicated.
 
 ## Suggested Repository Layout
 
@@ -286,10 +319,10 @@ apps/
     authorizationpolicy.yaml
 ```
 
-If managed through Argo CD:
+Argo CD application definitions live in a separate repo named `k8s-playground-argocd-apps`:
 
 ```text
-argocd/
+k8s-playground-argocd-apps/
   applications/
     metallb.yaml
     cert-manager.yaml
@@ -306,24 +339,33 @@ argocd/
 4. Deploy a rudimentary `k8s-playground-service` tracer bullet.
 5. Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`.
 6. Validate that the app is reachable externally without TLS.
-7. Install cert-manager.
-8. Install Istio sidecar mode.
-9. Optionally install Istio CNI.
-10. Install Istio ingress gateway.
-11. Configure Gateway API resources.
-12. Move `k8s-playground-service` external traffic from direct LoadBalancer exposure to Istio ingress gateway and HTTPRoute.
-13. Install Prometheus, Grafana, and Kiali.
-14. Create or update the app namespace with revision-based sidecar injection.
-15. Add strict mTLS for the app namespace.
-16. Add default-deny AuthorizationPolicy for the app namespace.
-17. Allow ingress gateway traffic to the app with AuthorizationPolicy.
-18. Validate external routing, sidecar injection, mTLS, authorization, and observability.
+7. Install Argo CD manually or with a local `mise` task.
+8. Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there.
+9. Have Argo CD adopt/manage MetalLB.
+10. Have Argo CD adopt/manage the tracer app.
+11. Validate that the Argo-managed tracer app is still reachable externally.
+12. Install cert-manager through Argo CD.
+13. Install Istio sidecar mode through Argo CD.
+14. Optionally install Istio CNI through Argo CD.
+15. Install Istio ingress gateway through Argo CD.
+16. Configure Gateway API resources through Argo CD.
+17. Move `k8s-playground-service` external traffic from direct LoadBalancer exposure to Istio ingress gateway and HTTPRoute.
+18. Create or update the app namespace with revision-based sidecar injection.
+19. Add strict mTLS for the app namespace.
+20. Add default-deny AuthorizationPolicy for the app namespace.
+21. Allow ingress gateway traffic to the app with AuthorizationPolicy.
+22. Validate external routing, sidecar injection, mTLS, and authorization.
+23. Install Prometheus, Grafana, and Kiali through Argo CD.
+24. Validate observability after the platform traffic path is already working.
 
 ## Validation Checklist
 
 - The kind cluster has multiple nodes.
 - LoadBalancer services receive usable external addresses.
 - The first tracer-bullet app is reachable through a direct LoadBalancer service before Istio is installed.
+- Argo CD is introduced only after the first tracer bullet works.
+- Argo CD can manage MetalLB without breaking LoadBalancer assignment.
+- Argo CD can manage the tracer app without breaking external reachability.
 - cert-manager can issue a local certificate.
 - Istio control plane is healthy.
 - Istio ingress gateway is healthy.
@@ -368,9 +410,6 @@ Later app resources after Istio is introduced:
 
 - Should Istio CNI be included in the first Istio install?
 - What local domain should be used for apps?
-- Should Argo CD manage platform components immediately, or should the first install be manual and then codified?
-- Should observability be installed before or after the first app is deployed?
-- Should the tracer-bullet app be managed by Argo CD immediately, or should it start as a manually applied manifest that is codified first?
 
 ## Closed Decisions
 
@@ -380,3 +419,9 @@ Later app resources after Istio is introduced:
 - Use top-level `mise.toml` for local operator tasks instead of command snippets in per-directory READMEs.
 - Deploy a rudimentary app before Istio so there is always a simple validator for platform changes.
 - Use MetalLB for kind LoadBalancer support and do not use cloud-provider-kind.
+- Do not use Argo CD for the first bring-up. Use local tasks for kind, MetalLB, and the first tracer app.
+- Introduce Argo CD immediately after the direct LoadBalancer tracer bullet works.
+- Have Argo CD adopt/manage MetalLB and the tracer app before adding cert-manager, Istio, and observability.
+- Create `k8s-playground-argocd-apps` when it is time to introduce Argo CD.
+- Do not store Argo CD `Application` definitions temporarily in this platform-config repo.
+- Install observability at the end, after the core app, MetalLB, Argo CD, Istio, Gateway API, mTLS, and authorization path is working.
