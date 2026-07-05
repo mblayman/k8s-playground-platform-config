@@ -1,3 +1,27 @@
+[tasks."cluster:create"]
+description = "Create the kind cluster and bootstrap current platform"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--config <config>" help="kind cluster config path" default="clusters/kind/cluster.yaml"
+flag "--metallb-version <metallb-version>" help="MetalLB version" default="v0.14.9"
+flag "--network <network>" help="Docker network used by kind" default="kind"
+flag "--metallb-namespace <metallb-namespace>" help="MetalLB namespace" default="metallb-system"
+flag "--metallb-pool-name <metallb-pool-name>" help="MetalLB IPAddressPool name" default="kind-pool"
+'''
+run = '''
+mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
+mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
+mise run kind:status --name {{ usage.name }}
+mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
+'''
+
+[tasks."cluster:delete"]
+description = "Delete the local kind cluster"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = "mise run kind:delete --name {{ usage.name }}"
+
 [tasks."kind:create"]
 description = "Create the local kind cluster"
 usage = '''
@@ -26,3 +50,63 @@ usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 '''
 run = "kind get clusters && kubectl --context kind-{{ usage.name }} get nodes -o wide"
+
+[tasks."metallb:install"]
+description = "Install MetalLB into the kind cluster"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--version <version>" help="MetalLB version" default="v0.14.9"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} apply -f https://raw.githubusercontent.com/metallb/metallb/{{ usage.version }}/config/manifests/metallb-native.yaml
+kubectl --context kind-{{ usage.name }} wait --for=condition=Established crd/ipaddresspools.metallb.io crd/l2advertisements.metallb.io --timeout=120s
+kubectl --context kind-{{ usage.name }} -n metallb-system rollout status deployment/controller --timeout=120s
+kubectl --context kind-{{ usage.name }} -n metallb-system rollout status daemonset/speaker --timeout=120s
+'''
+
+[tasks."metallb:render-config"]
+description = "Render kind-specific MetalLB layer 2 config"
+usage = '''
+flag "--network <network>" help="Docker network used by kind" default="kind"
+flag "--namespace <namespace>" help="MetalLB namespace" default="metallb-system"
+flag "--pool-name <pool-name>" help="MetalLB IPAddressPool name" default="kind-pool"
+'''
+run = "scripts/render-metallb-kind-config.sh --network {{ usage.network }} --namespace {{ usage.namespace }} --pool-name {{ usage.pool_name }}"
+
+[tasks."metallb:configure"]
+description = "Apply kind-specific MetalLB layer 2 config"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--network <network>" help="Docker network used by kind" default="kind"
+flag "--namespace <namespace>" help="MetalLB namespace" default="metallb-system"
+flag "--pool-name <pool-name>" help="MetalLB IPAddressPool name" default="kind-pool"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} wait --for=condition=Established crd/ipaddresspools.metallb.io crd/l2advertisements.metallb.io --timeout=120s
+scripts/render-metallb-kind-config.sh --context kind-{{ usage.name }} --network {{ usage.network }} --namespace {{ usage.namespace }} --pool-name {{ usage.pool_name }} --apply
+'''
+
+[tasks."metallb:bootstrap"]
+description = "Install and configure MetalLB for kind"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--version <version>" help="MetalLB version" default="v0.14.9"
+flag "--network <network>" help="Docker network used by kind" default="kind"
+flag "--namespace <namespace>" help="MetalLB namespace" default="metallb-system"
+flag "--pool-name <pool-name>" help="MetalLB IPAddressPool name" default="kind-pool"
+'''
+run = '''
+mise run metallb:install --name {{ usage.name }} --version {{ usage.version }}
+mise run metallb:configure --name {{ usage.name }} --network {{ usage.network }} --namespace {{ usage.namespace }} --pool-name {{ usage.pool_name }}
+'''
+
+[tasks."metallb:status"]
+description = "Show MetalLB pods and configuration"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="MetalLB namespace" default="metallb-system"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get pods -o wide
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get ipaddresspool,l2advertisement
+'''

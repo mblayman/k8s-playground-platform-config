@@ -31,14 +31,30 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided to use MetalLB layer 2 mode for kind. BGP mode is out of scope because this playground does not need to model bare-metal router peering.
 - Decided the MetalLB address pool should be derived from the actual Docker `kind` network during bring-up instead of hard-coding a subnet. Repeated cluster rebuilds and different host machines should remain automatable.
 - Decided to defer local domain name setup. The first tracer bullet should validate direct access by MetalLB-assigned IP.
+- Created kind-only MetalLB layer 2 config template at `platform/metallb/kind/l2-config.yaml.tpl`.
+- Created `scripts/render-metallb-kind-config.sh` to inspect the Docker `kind` network, derive a safe MetalLB IP range, render the MetalLB config, and optionally apply it.
+- Added `mise` tasks for MetalLB install, render-config, configure, bootstrap, and status.
+- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, and shows cluster/MetalLB status.
 
 Current local cluster tasks:
 
 ```sh
+mise run cluster:create
+mise run cluster:delete
 mise run kind:create
 mise run kind:delete
 mise run kind:nodes
 mise run kind:status
+```
+
+Current local MetalLB tasks:
+
+```sh
+mise run metallb:install
+mise run metallb:render-config
+mise run metallb:configure
+mise run metallb:bootstrap
+mise run metallb:status
 ```
 
 The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
@@ -138,6 +154,19 @@ For example, if the Docker `kind` network is `172.21.0.0/16`, a reasonable gener
 
 ```text
 172.21.255.200-172.21.255.250
+```
+
+Current implementation files:
+
+```text
+platform/metallb/kind/l2-config.yaml.tpl
+scripts/render-metallb-kind-config.sh
+```
+
+Current operator task:
+
+```sh
+mise run metallb:bootstrap
 ```
 
 LoadBalancer support should be installed before Istio because it gives us a simple external-access validator. The first tracer-bullet version of `k8s-playground-service` can be exposed directly with a temporary `Service` of type `LoadBalancer`.
@@ -331,6 +360,8 @@ clusters/
 
 platform/
   metallb/
+    kind/
+      l2-config.yaml.tpl
   cert-manager/
   istio/
     base/
@@ -347,6 +378,9 @@ apps/
     httproute.yaml
     peerauthentication.yaml
     authorizationpolicy.yaml
+
+scripts/
+  render-metallb-kind-config.sh
 ```
 
 Argo CD application definitions live in a separate repo named `k8s-playground-argocd-apps`:
@@ -364,8 +398,8 @@ k8s-playground-argocd-apps/
 ## Implementation Order
 
 1. Create a new multi-node kind cluster config. Completed: `clusters/kind/cluster.yaml`.
-2. Create the new multi-node kind cluster.
-3. Install MetalLB.
+2. Create the new multi-node kind cluster and install MetalLB. Current command: `mise run cluster:create`.
+3. Verify MetalLB status.
 4. Deploy a rudimentary `k8s-playground-service` tracer bullet.
 5. Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`.
 6. Validate that the app is reachable externally without TLS.
@@ -392,6 +426,7 @@ k8s-playground-argocd-apps/
 
 - The kind cluster has multiple nodes.
 - LoadBalancer services receive usable external addresses.
+- `mise run metallb:render-config` renders an `IPAddressPool` and `L2Advertisement` from the Docker `kind` network.
 - The first tracer-bullet app is reachable through a direct LoadBalancer service before Istio is installed.
 - Argo CD is introduced only after the first tracer bullet works.
 - Argo CD can manage MetalLB without breaking LoadBalancer assignment.
