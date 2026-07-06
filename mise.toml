@@ -11,8 +11,11 @@ flag "--metallb-pool-name <metallb-pool-name>" help="MetalLB IPAddressPool name"
 run = '''
 mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
 mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
+mise run app:deploy --name {{ usage.name }}
+mise run app:smoke-test --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
+mise run app:status --name {{ usage.name }}
 '''
 
 [tasks."cluster:delete"]
@@ -21,6 +24,79 @@ usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 '''
 run = "mise run kind:delete --name {{ usage.name }}"
+
+[tasks."app:deploy"]
+description = "Deploy the tracer-bullet app"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--path <path>" help="kustomize path for the tracer app" default="apps/k8s-playground-service/tracer-bullet"
+flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
+flag "--deployment <deployment>" help="app deployment name" default="k8s-playground-service"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} apply -k {{ usage.path }}
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} rollout status deployment/{{ usage.deployment }} --timeout=120s
+'''
+
+[tasks."app:status"]
+description = "Show tracer-bullet app status"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
+flag "--service <service>" help="app service name" default="k8s-playground-service"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get deployment,pods,service -o wide
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get endpointslice -l kubernetes.io/service-name={{ usage.service }} -o wide
+'''
+
+[tasks."app:external-ip"]
+description = "Print the tracer-bullet app LoadBalancer IP"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
+flag "--service <service>" help="app service name" default="k8s-playground-service"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}{"\n"}'
+'''
+
+[tasks."app:smoke-test"]
+description = "Verify the tracer-bullet app through its LoadBalancer IP"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
+flag "--service <service>" help="app service name" default="k8s-playground-service"
+flag "--expected <expected>" help="expected response body" default="Howdy from k8s-playground-service"
+'''
+run = '''
+ip=""
+for i in $(seq 1 60); do
+  ip="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  if [ -n "$ip" ]; then
+    break
+  fi
+  sleep 2
+done
+
+if [ -z "$ip" ]; then
+  echo "LoadBalancer IP was not assigned" >&2
+  exit 1
+fi
+
+url="http://$ip/"
+body="$(curl --fail --silent --show-error "$url")"
+expected="{{ usage.expected }}"
+
+if [ "$body" != "$expected" ]; then
+  echo "Unexpected response from $url" >&2
+  echo "Expected: $expected" >&2
+  echo "Actual:   $body" >&2
+  exit 1
+fi
+
+echo "$url -> $body"
+'''
 
 [tasks."kind:create"]
 description = "Create the local kind cluster"

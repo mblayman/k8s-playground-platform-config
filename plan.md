@@ -34,7 +34,12 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Created kind-only MetalLB layer 2 config template at `platform/metallb/kind/l2-config.yaml.tpl`.
 - Created `scripts/render-metallb-kind-config.sh` to inspect the Docker `kind` network, derive a safe MetalLB IP range, render the MetalLB config, and optionally apply it.
 - Added `mise` tasks for MetalLB install, render-config, configure, bootstrap, and status.
-- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, and shows cluster/MetalLB status.
+- Added tracer-bullet app manifests under `apps/k8s-playground-service/tracer-bullet/`.
+- Pinned the tracer-bullet image to `mblayman/k8s-playground-service:0.1.0` because `latest` is not published on Docker Hub.
+- Set the tracer-bullet app greeting to `Howdy` so the response is visibly non-default.
+- Added `mise` tasks for tracer-bullet app deploy, status, and smoke testing.
+- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, deploys the tracer app, smoke tests it, and shows status.
+- Validated the tracer app through MetalLB at `http://172.21.255.200/`, returning `Howdy from k8s-playground-service`.
 
 Current local cluster tasks:
 
@@ -55,6 +60,14 @@ mise run metallb:render-config
 mise run metallb:configure
 mise run metallb:bootstrap
 mise run metallb:status
+```
+
+Current local app tasks:
+
+```sh
+mise run app:deploy
+mise run app:smoke-test
+mise run app:status
 ```
 
 The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
@@ -372,12 +385,16 @@ platform/
 
 apps/
   k8s-playground-service/
-    namespace.yaml
-    deployment.yaml
-    service.yaml
-    httproute.yaml
-    peerauthentication.yaml
-    authorizationpolicy.yaml
+    tracer-bullet/
+      kustomization.yaml
+      namespace.yaml
+      deployment.yaml
+      service.yaml
+    future-istio-managed-shape/
+      service.yaml
+      httproute.yaml
+      peerauthentication.yaml
+      authorizationpolicy.yaml
 
 scripts/
   render-metallb-kind-config.sh
@@ -399,10 +416,10 @@ k8s-playground-argocd-apps/
 
 1. Create a new multi-node kind cluster config. Completed: `clusters/kind/cluster.yaml`.
 2. Create the new multi-node kind cluster and install MetalLB. Current command: `mise run cluster:create`.
-3. Verify MetalLB status.
-4. Deploy a rudimentary `k8s-playground-service` tracer bullet.
-5. Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`.
-6. Validate that the app is reachable externally without TLS.
+3. Verify MetalLB status. Completed locally.
+4. Deploy a rudimentary `k8s-playground-service` tracer bullet. Completed locally.
+5. Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`. Completed locally.
+6. Validate that the app is reachable externally without TLS. Completed locally: `http://172.21.255.200/` returned `Howdy from k8s-playground-service`.
 7. Install Argo CD manually or with a local `mise` task.
 8. Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there.
 9. Have Argo CD adopt/manage MetalLB.
@@ -428,6 +445,7 @@ k8s-playground-argocd-apps/
 - LoadBalancer services receive usable external addresses.
 - `mise run metallb:render-config` renders an `IPAddressPool` and `L2Advertisement` from the Docker `kind` network.
 - The first tracer-bullet app is reachable through a direct LoadBalancer service before Istio is installed.
+- `mise run app:smoke-test` verifies the direct LoadBalancer path and non-default greeting.
 - Argo CD is introduced only after the first tracer bullet works.
 - Argo CD can manage MetalLB without breaking LoadBalancer assignment.
 - Argo CD can manage the tracer app without breaking external reachability.
@@ -448,7 +466,19 @@ k8s-playground-argocd-apps/
 Deploy `k8s-playground-service` using the image:
 
 ```text
-mblayman/k8s-playground-service:latest
+mblayman/k8s-playground-service:0.1.0
+```
+
+The tracer-bullet deployment sets:
+
+```text
+GREETING=Howdy
+```
+
+Expected response:
+
+```text
+Howdy from k8s-playground-service
 ```
 
 The app listens on port `8080` and exposes:
@@ -461,6 +491,7 @@ Initial app resources:
 - Namespace
 - Deployment
 - Temporary LoadBalancer Service for the first tracer bullet
+- Non-default `GREETING` environment variable
 
 Later app resources after Istio is introduced:
 
@@ -493,3 +524,4 @@ Later app resources after Istio is introduced:
 - Create `k8s-playground-argocd-apps` when it is time to introduce Argo CD.
 - Do not store Argo CD `Application` definitions temporarily in this platform-config repo.
 - Install observability at the end, after the core app, MetalLB, Argo CD, Istio, Gateway API, mTLS, and authorization path is working.
+- Pin the tracer-bullet app image to `mblayman/k8s-playground-service:0.1.0` instead of `latest`.
