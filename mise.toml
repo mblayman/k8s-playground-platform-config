@@ -13,9 +13,11 @@ mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
 mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
 mise run app:deploy --name {{ usage.name }}
 mise run app:smoke-test --name {{ usage.name }}
+mise run argocd:install --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
 mise run app:status --name {{ usage.name }}
+mise run argocd:status --name {{ usage.name }}
 '''
 
 [tasks."cluster:delete"]
@@ -85,17 +87,167 @@ if [ -z "$ip" ]; then
 fi
 
 url="http://$ip/"
-body="$(curl --fail --silent --show-error "$url")"
 expected="{{ usage.expected }}"
 
+body=""
+for i in $(seq 1 60); do
+  if body="$(curl --fail --silent "$url" 2>/dev/null)" && [ "$body" = "$expected" ]; then
+    echo "$url -> $body"
+    exit 0
+  fi
+  sleep 2
+done
+
 if [ "$body" != "$expected" ]; then
-  echo "Unexpected response from $url" >&2
+  echo "Service did not return the expected response from $url within the timeout" >&2
   echo "Expected: $expected" >&2
   echo "Actual:   $body" >&2
   exit 1
 fi
+'''
 
-echo "$url -> $body"
+[tasks."argocd:install"]
+description = "Install Argo CD into the kind cluster"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+flag "--version <version>" help="Argo CD version" default="v3.4.4"
+flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="platform/argocd/kind"
+'''
+run = '''
+mise run argocd:apply --name {{ usage.name }} --namespace {{ usage.namespace }} --version {{ usage.version }} --path {{ usage.path }}
+mise run \
+  argocd:wait:application-controller --name {{ usage.name }} --namespace {{ usage.namespace }} ::: \
+  argocd:wait:applicationset-controller --name {{ usage.name }} --namespace {{ usage.namespace }} ::: \
+  argocd:wait:dex-server --name {{ usage.name }} --namespace {{ usage.namespace }} ::: \
+  argocd:wait:notifications-controller --name {{ usage.name }} --namespace {{ usage.namespace }} ::: \
+  argocd:wait:redis --name {{ usage.name }} --namespace {{ usage.namespace }} ::: \
+  argocd:wait:repo-server --name {{ usage.name }} --namespace {{ usage.namespace }} ::: \
+  argocd:wait:server --name {{ usage.name }} --namespace {{ usage.namespace }}
+echo "Argo CD {{ usage.version }} is ready in namespace {{ usage.namespace }}"
+'''
+
+[tasks."argocd:apply"]
+hide = true
+description = "Apply Argo CD manifests"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+flag "--version <version>" help="Argo CD version" default="v3.4.4"
+flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="platform/argocd/kind"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} apply -k {{ usage.path }}
+kubectl --context kind-{{ usage.name }} apply --server-side --force-conflicts -n {{ usage.namespace }} -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ usage.version }}/manifests/install.yaml
+'''
+
+[tasks."argocd:wait:application-controller"]
+hide = true
+description = "Wait for Argo CD application controller"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource statefulset/argocd-application-controller --selector app.kubernetes.io/name=argocd-application-controller --timeout 300 --report-interval 60
+'''
+
+[tasks."argocd:wait:applicationset-controller"]
+hide = true
+description = "Wait for Argo CD ApplicationSet controller"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/argocd-applicationset-controller --selector app.kubernetes.io/name=argocd-applicationset-controller --timeout 300 --report-interval 60 --start-delay 2
+'''
+
+[tasks."argocd:wait:dex-server"]
+hide = true
+description = "Wait for Argo CD Dex server"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/argocd-dex-server --selector app.kubernetes.io/name=argocd-dex-server --timeout 300 --report-interval 60 --start-delay 4
+'''
+
+[tasks."argocd:wait:notifications-controller"]
+hide = true
+description = "Wait for Argo CD notifications controller"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/argocd-notifications-controller --selector app.kubernetes.io/name=argocd-notifications-controller --timeout 300 --report-interval 60 --start-delay 6
+'''
+
+[tasks."argocd:wait:redis"]
+hide = true
+description = "Wait for Argo CD Redis"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/argocd-redis --selector app.kubernetes.io/name=argocd-redis --timeout 300 --report-interval 60 --start-delay 8
+'''
+
+[tasks."argocd:wait:repo-server"]
+hide = true
+description = "Wait for Argo CD repo server"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/argocd-repo-server --selector app.kubernetes.io/name=argocd-repo-server --timeout 300 --report-interval 60 --start-delay 10
+'''
+
+[tasks."argocd:wait:server"]
+hide = true
+description = "Wait for Argo CD server"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/argocd-server --selector app.kubernetes.io/name=argocd-server --timeout 300 --report-interval 60 --start-delay 12
+'''
+
+[tasks."argocd:status"]
+description = "Show Argo CD status"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get pods,svc -o wide
+'''
+
+[tasks."argocd:admin-password"]
+description = "Print the initial Argo CD admin password"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+printf '\n'
+'''
+
+[tasks."argocd:port-forward"]
+description = "Port-forward the Argo CD API/UI to localhost:8080"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+flag "--port <port>" help="local port" default="8080"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} port-forward svc/argocd-server {{ usage.port }}:443
 '''
 
 [tasks."kind:create"]
@@ -134,10 +286,51 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--version <version>" help="MetalLB version" default="v0.14.9"
 '''
 run = '''
+mise run metallb:apply --name {{ usage.name }} --version {{ usage.version }}
+mise run metallb:wait:crds --name {{ usage.name }}
+mise run metallb:wait:controller --name {{ usage.name }}
+mise run metallb:wait:speaker --name {{ usage.name }}
+'''
+
+[tasks."metallb:apply"]
+hide = true
+description = "Apply MetalLB manifests"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--version <version>" help="MetalLB version" default="v0.14.9"
+'''
+run = '''
 kubectl --context kind-{{ usage.name }} apply -f https://raw.githubusercontent.com/metallb/metallb/{{ usage.version }}/config/manifests/metallb-native.yaml
+'''
+
+[tasks."metallb:wait:crds"]
+hide = true
+description = "Wait for MetalLB CRDs"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = '''
 kubectl --context kind-{{ usage.name }} wait --for=condition=Established crd/ipaddresspools.metallb.io crd/l2advertisements.metallb.io --timeout=120s
-kubectl --context kind-{{ usage.name }} -n metallb-system rollout status deployment/controller --timeout=120s
-kubectl --context kind-{{ usage.name }} -n metallb-system rollout status daemonset/speaker --timeout=120s
+'''
+
+[tasks."metallb:wait:controller"]
+hide = true
+description = "Wait for MetalLB controller"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace metallb-system --resource deployment/controller --selector app=metallb,component=controller --timeout 300
+'''
+
+[tasks."metallb:wait:speaker"]
+hide = true
+description = "Wait for MetalLB speaker"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace metallb-system --resource daemonset/speaker --selector app=metallb,component=speaker --timeout 300
 '''
 
 [tasks."metallb:render-config"]
