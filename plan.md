@@ -34,11 +34,11 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Created kind-only MetalLB layer 2 config template at `platform/metallb/kind/l2-config.yaml.tpl`.
 - Created `scripts/render-metallb-kind-config.sh` to inspect the Docker `kind` network, derive a safe MetalLB IP range, render the MetalLB config, and optionally apply it.
 - Added `mise` tasks for MetalLB install, render-config, configure, bootstrap, and status.
-- Added tracer-bullet app manifests under `apps/k8s-playground-service/tracer-bullet/`.
-- Pinned the tracer-bullet image to `mblayman/k8s-playground-service:0.1.0` because `latest` is not published on Docker Hub.
-- Set the tracer-bullet app greeting to `Howdy` so the response is visibly non-default.
-- Added `mise` tasks for tracer-bullet app deploy, status, and smoke testing.
-- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, deploys the tracer app, smoke tests it, and shows status.
+- Initially added tracer-bullet app manifests under `apps/k8s-playground-service/tracer-bullet/`, then moved the app source of truth to `../k8s-playground-argocd-apps/components/apps/k8s-playground-service/` after Argo CD was introduced.
+- Pinned the app image to `mblayman/k8s-playground-service:0.1.0` because `latest` is not published on Docker Hub.
+- Set the app greeting to `Howdy` so the response is visibly non-default.
+- Added `mise` tasks for app status, external IP lookup, and smoke testing.
+- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, installs Argo CD, bootstraps the kind root app, smoke tests the app, and shows status.
 - Validated the tracer app through MetalLB at `http://172.21.255.200/`, returning `Howdy from k8s-playground-service`.
 - Created Argo CD namespace configuration under `platform/argocd/kind/`.
 - Added `mise` tasks for Argo CD install, status, initial admin password retrieval, and port-forwarding.
@@ -47,6 +47,9 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Confirmed the tracer app still works after Argo CD installation.
 - Refactored `argocd:install` so Argo CD manifests are applied first, then independent component rollout checks run in parallel.
 - Added `scripts/wait-for-rollout.sh` so rollout waits poll frequently while printing periodic workload and pod status, then wired Argo CD waits and MetalLB controller/speaker waits through it. MetalLB now waits for the controller before the speaker because the speaker depends on controller-created startup state such as the `memberlist` Secret.
+- Populated `../k8s-playground-argocd-apps` with the initial `clusters/kind` root app-of-apps structure and the first child `Application` for `k8s-playground-service`.
+- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the Argo-managed service app to become synced and healthy.
+- Removed the direct `k8s-playground-service` manifests and `app:deploy` task from this repo after Argo CD adopted the service.
 
 Current local cluster tasks:
 
@@ -72,7 +75,7 @@ mise run metallb:status
 Current local app tasks:
 
 ```sh
-mise run app:deploy
+mise run app:external-ip
 mise run app:smoke-test
 mise run app:status
 ```
@@ -81,6 +84,7 @@ Current local Argo CD tasks:
 
 ```sh
 mise run argocd:install
+mise run argocd:bootstrap-root
 mise run argocd:status
 mise run argocd:admin-password
 mise run argocd:port-forward
@@ -403,33 +407,28 @@ platform/
     ingressgateway/
   observability/
 
-apps/
-  k8s-playground-service/
-    tracer-bullet/
-      kustomization.yaml
-      namespace.yaml
-      deployment.yaml
-      service.yaml
-    future-istio-managed-shape/
-      service.yaml
-      httproute.yaml
-      peerauthentication.yaml
-      authorizationpolicy.yaml
-
 scripts/
   render-metallb-kind-config.sh
+  wait-for-rollout.sh
 ```
 
 Argo CD application definitions live in a separate repo named `k8s-playground-argocd-apps`:
 
 ```text
 k8s-playground-argocd-apps/
-  applications/
-    metallb.yaml
-    cert-manager.yaml
-    istio.yaml
-    observability.yaml
-    k8s-playground-service.yaml
+  clusters/
+    kind/
+      application.yaml
+      apps/
+        k8s-playground-service.yaml
+  components/
+    apps/
+      k8s-playground-service/
+        kustomization.yaml
+        namespace.yaml
+        deployment.yaml
+        service.yaml
+    platform/
 ```
 
 ## Implementation Order
@@ -441,10 +440,10 @@ k8s-playground-argocd-apps/
 5. Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`. Completed locally.
 6. Validate that the app is reachable externally without TLS. Completed locally: `http://172.21.255.200/` returned `Howdy from k8s-playground-service`.
 7. Install Argo CD manually or with a local `mise` task. Completed locally: `mise run argocd:install` installed Argo CD `v3.4.4`.
-8. Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there.
+8. Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there. Completed.
 9. Have Argo CD adopt/manage MetalLB.
-10. Have Argo CD adopt/manage the tracer app.
-11. Validate that the Argo-managed tracer app is still reachable externally.
+10. Have Argo CD adopt/manage the tracer app. Completed for `k8s-playground-service`.
+11. Validate that the Argo-managed tracer app is still reachable externally. Completed locally.
 12. Install cert-manager through Argo CD.
 13. Install Istio sidecar mode through Argo CD.
 14. Optionally install Istio CNI through Argo CD.

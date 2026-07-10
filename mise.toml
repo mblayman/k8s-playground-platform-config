@@ -11,9 +11,9 @@ flag "--metallb-pool-name <metallb-pool-name>" help="MetalLB IPAddressPool name"
 run = '''
 mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
 mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
-mise run app:deploy --name {{ usage.name }}
-mise run app:smoke-test --name {{ usage.name }}
 mise run argocd:install --name {{ usage.name }}
+mise run argocd:bootstrap-root --name {{ usage.name }}
+mise run app:smoke-test --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
 mise run app:status --name {{ usage.name }}
@@ -27,21 +27,8 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 '''
 run = "mise run kind:delete --name {{ usage.name }}"
 
-[tasks."app:deploy"]
-description = "Deploy the tracer-bullet app"
-usage = '''
-flag "--name <name>" help="kind cluster name" default="k8s-playground"
-flag "--path <path>" help="kustomize path for the tracer app" default="apps/k8s-playground-service/tracer-bullet"
-flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
-flag "--deployment <deployment>" help="app deployment name" default="k8s-playground-service"
-'''
-run = '''
-kubectl --context kind-{{ usage.name }} apply -k {{ usage.path }}
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} rollout status deployment/{{ usage.deployment }} --timeout=120s
-'''
-
 [tasks."app:status"]
-description = "Show tracer-bullet app status"
+description = "Show k8s-playground-service status"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
@@ -53,7 +40,7 @@ kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get endpointsli
 '''
 
 [tasks."app:external-ip"]
-description = "Print the tracer-bullet app LoadBalancer IP"
+description = "Print the k8s-playground-service LoadBalancer IP"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
@@ -64,7 +51,7 @@ kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ 
 '''
 
 [tasks."app:smoke-test"]
-description = "Verify the tracer-bullet app through its LoadBalancer IP"
+description = "Verify k8s-playground-service through its LoadBalancer IP"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
@@ -226,6 +213,33 @@ flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 '''
 run = '''
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get pods,svc -o wide
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get applications.argoproj.io -o wide
+'''
+
+[tasks."argocd:bootstrap-root"]
+description = "Apply the kind root Argo CD application and wait for the service app"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
+flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
+flag "--service-app <service-app>" help="service Argo CD Application name" default="k8s-playground-service"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} apply -f {{ usage.manifest }}
+
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.root_app }} --for=jsonpath='{.status.sync.status}'=Synced --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.root_app }} --for=jsonpath='{.status.health.status}'=Healthy --timeout=300s
+
+for i in $(seq 1 60); do
+  if kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application/{{ usage.service_app }} >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.service_app }} --for=jsonpath='{.status.sync.status}'=Synced --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.service_app }} --for=jsonpath='{.status.health.status}'=Healthy --timeout=300s
 '''
 
 [tasks."argocd:admin-password"]
