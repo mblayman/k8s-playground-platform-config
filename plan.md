@@ -27,7 +27,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided to use `k8s-playground-service` as an early tracer bullet before installing Istio.
 - Decided the first externally reachable app version may use a direct `Service` of type `LoadBalancer` with no TLS, then evolve to Istio ingress and Gateway API later.
 - Decided not to use Argo CD for the very first bring-up. The initial kind, MetalLB, and tracer app path should be driven by local `mise` tasks and `kubectl` so early failures are easy to debug.
-- Decided to introduce Argo CD immediately after the first LoadBalancer tracer bullet is working, then have Argo adopt/manage MetalLB and the tracer app before adding cert-manager, Istio, and observability.
+- Decided to introduce Argo CD immediately after the first LoadBalancer tracer bullet is working, then have Argo adopt/manage the tracer app before adding cert-manager, Istio, and observability. MetalLB remains outside Argo for kind because its IP pool is generated from the local Docker `kind` network at bootstrap time.
 - Decided to use MetalLB layer 2 mode for kind. BGP mode is out of scope because this playground does not need to model bare-metal router peering.
 - Decided the MetalLB address pool should be derived from the actual Docker `kind` network during bring-up instead of hard-coding a subnet. Repeated cluster rebuilds and different host machines should remain automatable.
 - Decided to defer local domain name setup. The first tracer bullet should validate direct access by MetalLB-assigned IP.
@@ -175,6 +175,8 @@ Use MetalLB layer 2 mode.
 Layer 2 mode is the right fit for kind because it only needs an `IPAddressPool` and an `L2Advertisement`. BGP mode is unnecessary for this playground because it would require router/BGP peer configuration and would distract from the main learning path.
 
 The MetalLB `IPAddressPool` should be generated from the Docker `kind` network at bring-up time rather than hard-coded. On this machine, the current Docker `kind` network is `172.21.0.0/16`, but that should be treated as discovered state, not a portable constant.
+
+MetalLB should remain local kind bootstrap infrastructure rather than an Argo-managed component. Argo CD cannot declaratively discover the host Docker network subnet during sync, and committing rendered machine-specific IP pool config would make the GitOps repo less portable. Future cloud playground clusters should use cloud-appropriate LoadBalancer or gateway infrastructure instead of reusing the kind MetalLB setup.
 
 The bring-up automation should:
 
@@ -367,10 +369,10 @@ kind cluster -> MetalLB -> tracer app -> external smoke test
 
 This keeps the first debugging loop simple. If the tracer app is not reachable, the problem space is limited to the cluster, MetalLB, Kubernetes Services, and the app manifests.
 
-After the tracer bullet works, introduce Argo CD and have it adopt/manage the resources that were proven manually:
+After the tracer bullet works, introduce Argo CD and have it adopt/manage the app resources that were proven manually:
 
 ```text
-working tracer bullet -> install Argo CD -> Argo manages MetalLB and app -> add platform layers through Argo
+working tracer bullet -> install Argo CD -> Argo manages app -> add declarative platform layers through Argo
 ```
 
 Argo CD should become the steady-state manager before installing the more complex platform layers:
@@ -441,7 +443,7 @@ k8s-playground-argocd-apps/
 6. Validate that the app is reachable externally without TLS. Completed locally: `http://172.21.255.200/` returned `Howdy from k8s-playground-service`.
 7. Install Argo CD manually or with a local `mise` task. Completed locally: `mise run argocd:install` installed Argo CD `v3.4.4`.
 8. Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there. Completed.
-9. Have Argo CD adopt/manage MetalLB.
+9. Keep MetalLB outside Argo CD as kind bootstrap infrastructure because its config depends on local Docker network discovery. Completed decision.
 10. Have Argo CD adopt/manage the tracer app. Completed for `k8s-playground-service`.
 11. Validate that the Argo-managed tracer app is still reachable externally. Completed locally.
 12. Install cert-manager through Argo CD.
@@ -468,7 +470,7 @@ k8s-playground-argocd-apps/
 - Argo CD is introduced only after the first tracer bullet works.
 - Argo CD pods are healthy in the `argocd` namespace.
 - Argo CD CRDs are registered: `Application`, `ApplicationSet`, and `AppProject`.
-- Argo CD can manage MetalLB without breaking LoadBalancer assignment.
+- MetalLB remains managed by local kind bootstrap tasks, and Argo-managed apps can still use MetalLB-assigned LoadBalancer IPs.
 - Argo CD can manage the tracer app without breaking external reachability.
 - cert-manager can issue a local certificate.
 - Istio control plane is healthy.
@@ -541,7 +543,7 @@ Later app resources after Istio is introduced:
 - Defer local domain name and wildcard DNS setup. Use direct MetalLB IPs for the first tracer bullet.
 - Do not use Argo CD for the first bring-up. Use local tasks for kind, MetalLB, and the first tracer app.
 - Introduce Argo CD immediately after the direct LoadBalancer tracer bullet works.
-- Have Argo CD adopt/manage MetalLB and the tracer app before adding cert-manager, Istio, and observability.
+- Have Argo CD adopt/manage the tracer app before adding cert-manager, Istio, and observability. Keep MetalLB outside Argo for the kind cluster.
 - Create `k8s-playground-argocd-apps` when it is time to introduce Argo CD.
 - Do not store Argo CD `Application` definitions temporarily in this platform-config repo.
 - Install observability at the end, after the core app, MetalLB, Argo CD, Istio, Gateway API, mTLS, and authorization path is working.
