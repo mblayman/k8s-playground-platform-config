@@ -50,6 +50,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Populated `../k8s-playground-argocd-apps` with the initial `clusters/kind` root app-of-apps structure and the first child `Application` for `k8s-playground-service`.
 - Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the Argo-managed service app to become synced and healthy.
 - Removed the direct `k8s-playground-service` manifests and `app:deploy` task from this repo after Argo CD adopted the service.
+- Installed cert-manager through Argo CD using the Jetstack Helm chart with values kept under `components/platform/cert-manager/` in the Argo apps repo.
+- Added and synced Argo-managed local cert-manager config: self-signed bootstrap issuer, local root CA certificate, local CA `ClusterIssuer`, and test certificate request.
 
 Current local cluster tasks:
 
@@ -465,7 +467,7 @@ k8s-playground-argocd-apps/
 - [x] Have Argo CD adopt/manage the tracer app: completed for `k8s-playground-service`.
 - [x] Validate that the Argo-managed tracer app is still reachable externally.
 - [x] Install cert-manager through Argo CD.
-- [ ] Add a local issuer/certificate path through cert-manager.
+- [x] Add a local issuer/certificate path through cert-manager.
 - [ ] Install Istio sidecar mode through Argo CD.
 - [ ] Optionally install Istio CNI through Argo CD.
 - [ ] Install Istio ingress gateway through Argo CD.
