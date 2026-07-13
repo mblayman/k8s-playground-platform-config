@@ -218,6 +218,24 @@ For local development, start with:
 - ClusterIssuer
 - Certificate for a local app domain pattern such as `*.apps.k8s-playground.local`
 
+### Secrets Management
+
+Defer dedicated secrets-management hardening until the playground needs application credentials, private repo credentials, cloud-provider secrets, or other non-TLS sensitive data. For now, the standard Kubernetes `Secret` interface is sufficient for cert-manager-generated TLS material in the local kind cluster.
+
+Short-term rules:
+
+- Do not commit plaintext Kubernetes `Secret` manifests.
+- Treat Kubernetes Secrets as sensitive but not sufficient by themselves; base64 encoding is not encryption.
+- Use cert-manager-generated TLS Secrets for certificate lifecycle learning, but protect access to those Secrets with RBAC.
+
+Future options to evaluate:
+
+- SOPS with `age` for encrypted GitOps-managed Secret manifests.
+- External Secrets Operator with a backend such as Vault, 1Password, AWS Secrets Manager, or GCP Secret Manager.
+- Kubernetes secret encryption at rest for any future non-kind cluster.
+
+Keep the SOPS-versus-ESO decision open until the playground needs app credentials, private repo credentials, or cloud-provider secrets.
+
 ### Istio
 
 Install Istio in sidecar mode.
@@ -435,30 +453,32 @@ k8s-playground-argocd-apps/
 
 ## Implementation Order
 
-1. Create a new multi-node kind cluster config. Completed: `clusters/kind/cluster.yaml`.
-2. Create the new multi-node kind cluster and install MetalLB. Current command: `mise run cluster:create`.
-3. Verify MetalLB status. Completed locally.
-4. Deploy a rudimentary `k8s-playground-service` tracer bullet. Completed locally.
-5. Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`. Completed locally.
-6. Validate that the app is reachable externally without TLS. Completed locally: `http://172.21.255.200/` returned `Howdy from k8s-playground-service`.
-7. Install Argo CD manually or with a local `mise` task. Completed locally: `mise run argocd:install` installed Argo CD `v3.4.4`.
-8. Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there. Completed.
-9. Keep MetalLB outside Argo CD as kind bootstrap infrastructure because its config depends on local Docker network discovery. Completed decision.
-10. Have Argo CD adopt/manage the tracer app. Completed for `k8s-playground-service`.
-11. Validate that the Argo-managed tracer app is still reachable externally. Completed locally.
-12. Install cert-manager through Argo CD.
-13. Install Istio sidecar mode through Argo CD.
-14. Optionally install Istio CNI through Argo CD.
-15. Install Istio ingress gateway through Argo CD.
-16. Configure Gateway API resources through Argo CD.
-17. Move `k8s-playground-service` external traffic from direct LoadBalancer exposure to Istio ingress gateway and HTTPRoute.
-18. Create or update the app namespace with revision-based sidecar injection.
-19. Add strict mTLS for the app namespace.
-20. Add default-deny AuthorizationPolicy for the app namespace.
-21. Allow ingress gateway traffic to the app with AuthorizationPolicy.
-22. Validate external routing, sidecar injection, mTLS, and authorization.
-23. Install Prometheus, Grafana, and Kiali through Argo CD.
-24. Validate observability after the platform traffic path is already working.
+- [x] Create a new multi-node kind cluster config: `clusters/kind/cluster.yaml`.
+- [x] Create the new multi-node kind cluster and install MetalLB. Current command: `mise run cluster:create`.
+- [x] Verify MetalLB status.
+- [x] Deploy a rudimentary `k8s-playground-service` tracer bullet.
+- [x] Expose the tracer bullet with a temporary `Service` of type `LoadBalancer`.
+- [x] Validate that the app is reachable externally without TLS: `http://172.21.255.200/` returned `Howdy from k8s-playground-service`.
+- [x] Install Argo CD manually or with a local `mise` task: `mise run argocd:install` installed Argo CD `v3.4.4`.
+- [x] Create the `k8s-playground-argocd-apps` repo and add Argo app definitions there.
+- [x] Keep MetalLB outside Argo CD as kind bootstrap infrastructure because its config depends on local Docker network discovery.
+- [x] Have Argo CD adopt/manage the tracer app: completed for `k8s-playground-service`.
+- [x] Validate that the Argo-managed tracer app is still reachable externally.
+- [x] Install cert-manager through Argo CD.
+- [ ] Add a local issuer/certificate path through cert-manager.
+- [ ] Install Istio sidecar mode through Argo CD.
+- [ ] Optionally install Istio CNI through Argo CD.
+- [ ] Install Istio ingress gateway through Argo CD.
+- [ ] Configure Gateway API resources through Argo CD.
+- [ ] Move `k8s-playground-service` external traffic from direct LoadBalancer exposure to Istio ingress gateway and HTTPRoute.
+- [ ] Create or update the app namespace with revision-based sidecar injection.
+- [ ] Add strict mTLS for the app namespace.
+- [ ] Add default-deny AuthorizationPolicy for the app namespace.
+- [ ] Allow ingress gateway traffic to the app with AuthorizationPolicy.
+- [ ] Validate external routing, sidecar injection, mTLS, and authorization.
+- [ ] Install Prometheus, Grafana, and Kiali through Argo CD.
+- [ ] Validate observability after the platform traffic path is already working.
+- [ ] Revisit secrets-management hardening later when the playground needs non-TLS app credentials, private repo credentials, or cloud-provider secrets. Candidate approaches remain SOPS/age and External Secrets Operator.
 
 ## Validation Checklist
 
@@ -473,6 +493,7 @@ k8s-playground-argocd-apps/
 - MetalLB remains managed by local kind bootstrap tasks, and Argo-managed apps can still use MetalLB-assigned LoadBalancer IPs.
 - Argo CD can manage the tracer app without breaking external reachability.
 - cert-manager can issue a local certificate.
+- No plaintext sensitive Kubernetes Secret manifests are committed.
 - Istio control plane is healthy.
 - Istio ingress gateway is healthy.
 - App pods receive sidecars through revision-based injection.
@@ -529,6 +550,7 @@ Later app resources after Istio is introduced:
 
 - Should Istio CNI be included in the first Istio install?
 - What local domain should be used for apps?
+- Should future GitOps secret handling use SOPS/age, External Secrets Operator, or both for different secret classes?
 
 ## Closed Decisions
 

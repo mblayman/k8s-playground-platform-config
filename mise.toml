@@ -1,3 +1,6 @@
+[tools]
+helm = "3.21.3"
+
 [tasks."cluster:create"]
 description = "Create the kind cluster and bootstrap current platform"
 usage = '''
