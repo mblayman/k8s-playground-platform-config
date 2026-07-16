@@ -228,7 +228,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="cert-manager cert-manager-config k8s-playground-service istio-base istiod istio-cni"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="cert-manager cert-manager-config k8s-playground-service istio-base istiod istio-cni istio-ingressgateway"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''
@@ -298,6 +298,20 @@ kubectl --context kind-{{ usage.name }} wait --for=condition=Established \
   --timeout=300s
 scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/istiod-{{ usage.revision }} --selector app=istiod,istio.io/rev={{ usage.revision }} --timeout 300 --report-interval 60
 scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource daemonset/istio-cni-node --selector k8s-app=istio-cni-node --timeout 300 --report-interval 60
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/istio-ingressgateway --selector app=istio-ingressgateway,istio=ingressgateway --timeout 300 --report-interval 60
+
+gateway_ip=""
+for i in $(seq 1 60); do
+  gateway_ip="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
+  if [ -n "$gateway_ip" ]; then
+    echo "istio-ingressgateway LoadBalancer IP: $gateway_ip"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "istio-ingressgateway LoadBalancer IP was not assigned" >&2
+exit 1
 '''
 
 [tasks."istio:status"]
