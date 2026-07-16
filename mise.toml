@@ -16,10 +16,12 @@ mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
 mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
 mise run argocd:install --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
+mise run istio:wait --name {{ usage.name }}
 mise run app:smoke-test --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
 mise run app:status --name {{ usage.name }}
+mise run istio:status --name {{ usage.name }}
 mise run argocd:status --name {{ usage.name }}
 '''
 
@@ -220,29 +222,43 @@ kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application
 '''
 
 [tasks."argocd:bootstrap-root"]
-description = "Apply the kind root Argo CD application and wait for the service app"
+description = "Apply the kind root Argo CD application and wait for expected child apps"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--service-app <service-app>" help="service Argo CD Application name" default="k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="cert-manager cert-manager-config k8s-playground-service istio-base istiod"
+flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''
 kubectl --context kind-{{ usage.name }} apply -f {{ usage.manifest }}
 
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.root_app }} --for=jsonpath='{.status.sync.status}'=Synced --timeout=300s
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.root_app }} --for=jsonpath='{.status.health.status}'=Healthy --timeout=300s
+wait_application() {
+  app="$1"
+  echo "Waiting for Argo CD application/$app"
 
-for i in $(seq 1 60); do
-  if kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application/{{ usage.service_app }} >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
+  for i in $(seq 1 120); do
+    if kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application/$app >/dev/null 2>&1; then
+      break
+    fi
+    if [ "$i" = "120" ]; then
+      echo "Argo CD application/$app was not created within the timeout" >&2
+      exit 1
+    fi
+    sleep 2
+  done
+
+  kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/$app --for=jsonpath='{.status.sync.status}'=Synced --timeout={{ usage.timeout }}s
+  kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/$app --for=jsonpath='{.status.health.status}'=Healthy --timeout={{ usage.timeout }}s
+}
+
+wait_application "{{ usage.root_app }}"
+
+child_apps="{{ usage.child_apps }}"
+for app in $child_apps; do
+  wait_application "$app"
 done
-
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.service_app }} --for=jsonpath='{.status.sync.status}'=Synced --timeout=300s
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.service_app }} --for=jsonpath='{.status.health.status}'=Healthy --timeout=300s
 '''
 
 [tasks."argocd:admin-password"]
@@ -265,6 +281,33 @@ flag "--port <port>" help="local port" default="8080"
 '''
 run = '''
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} port-forward svc/argocd-server {{ usage.port }}:443
+'''
+
+[tasks."istio:wait"]
+description = "Wait for the Istio control plane"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
+flag "--revision <revision>" help="Istio control plane revision" default="stable"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} wait --for=condition=Established \
+  crd/authorizationpolicies.security.istio.io \
+  crd/peerauthentications.security.istio.io \
+  crd/virtualservices.networking.istio.io \
+  --timeout=300s
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.namespace }} --resource deployment/istiod-{{ usage.revision }} --selector app=istiod,istio.io/rev={{ usage.revision }} --timeout 300 --report-interval 60
+'''
+
+[tasks."istio:status"]
+description = "Show Istio control plane status"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get deployment,pods,svc -o wide
+kubectl --context kind-{{ usage.name }} get crd authorizationpolicies.security.istio.io peerauthentications.security.istio.io virtualservices.networking.istio.io gateways.networking.istio.io
 '''
 
 [tasks."kind:create"]

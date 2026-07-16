@@ -38,7 +38,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Pinned the app image to `mblayman/k8s-playground-service:0.1.0` because `latest` is not published on Docker Hub.
 - Set the app greeting to `Howdy` so the response is visibly non-default.
 - Added `mise` tasks for app status, external IP lookup, and smoke testing.
-- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, installs Argo CD, bootstraps the kind root app, smoke tests the app, and shows status.
+- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, installs Argo CD, bootstraps the kind root app, waits for expected Argo child apps, verifies Istio control plane readiness, smoke tests the app, and shows status.
 - Validated the tracer app through MetalLB at `http://172.21.255.200/`, returning `Howdy from k8s-playground-service`.
 - Created Argo CD namespace configuration under `platform/argocd/kind/`.
 - Added `mise` tasks for Argo CD install, status, initial admin password retrieval, and port-forwarding.
@@ -48,10 +48,13 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Refactored `argocd:install` so Argo CD manifests are applied first, then independent component rollout checks run in parallel.
 - Added `scripts/wait-for-rollout.sh` so rollout waits poll frequently while printing periodic workload and pod status, then wired Argo CD waits and MetalLB controller/speaker waits through it. MetalLB now waits for the controller before the speaker because the speaker depends on controller-created startup state such as the `memberlist` Secret.
 - Populated `../k8s-playground-argocd-apps` with the initial `clusters/kind` root app-of-apps structure and the first child `Application` for `k8s-playground-service`.
-- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the Argo-managed service app to become synced and healthy.
+- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the expected child apps to become synced and healthy: `cert-manager`, `cert-manager-config`, `k8s-playground-service`, `istio-base`, and `istiod`.
 - Removed the direct `k8s-playground-service` manifests and `app:deploy` task from this repo after Argo CD adopted the service.
 - Installed cert-manager through Argo CD using the Jetstack Helm chart with values kept under `components/platform/cert-manager/` in the Argo apps repo.
 - Added and synced Argo-managed local cert-manager config: self-signed bootstrap issuer, local root CA certificate, local CA `ClusterIssuer`, and test certificate request.
+- Added Argo app definitions and Helm validation tasks for Istio `base` and `istiod` in `../k8s-playground-argocd-apps`, pinned to Istio `1.30.2`.
+- Synced Istio `base` and `istiod` through Argo CD. The Kubernetes control plane resources are healthy, with `deployment/istiod-stable` ready.
+- Declared Istio validating webhooks fail-closed with `base.validationFailurePolicy: Fail`, documented sync wave guardrails, and confirmed a full `mise run cluster:create` rebuild comes up successfully with Argo apps synced and healthy.
 
 Current local cluster tasks:
 
@@ -90,6 +93,13 @@ mise run argocd:bootstrap-root
 mise run argocd:status
 mise run argocd:admin-password
 mise run argocd:port-forward
+```
+
+Current local Istio tasks:
+
+```sh
+mise run istio:wait
+mise run istio:status
 ```
 
 The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
@@ -404,6 +414,34 @@ Argo CD should become the steady-state manager before installing the more comple
 
 This gives us both a simple early bootstrap and a GitOps-managed platform before the configuration graph becomes complicated.
 
+### Argo CD Sync Waves
+
+Use sync waves as coarse dependency bands, not arbitrary ordering values. They are a platform dependency contract for CRDs, admission webhooks, controllers, and resources those controllers reconcile.
+
+Current wave structure:
+
+| Wave | Purpose |
+| ---: | --- |
+| `10` | Core platform controllers, such as cert-manager. |
+| `20` | Configuration consumed by core controllers, such as cert-manager issuers and certificates. |
+| `30` | Istio base APIs, CRDs, and validating webhook bootstrap. |
+| `40` | Istio control plane runtime, currently `istiod` with revision `stable`. |
+| `50` | Istio ingress gateway or other mesh data-plane gateway components. |
+| `60` | Platform-owned mesh and ingress configuration, such as Gateway API resources and namespace-level mesh defaults. |
+| `70` | Application workloads and services. |
+| `80` | App-owned routes and mesh policies, such as `HTTPRoute`, `AuthorizationPolicy`, and `PeerAuthentication`. |
+| `90` | Observability components and dashboards. |
+
+Guardrails:
+
+- Keep Istio validation fail-closed in steady state with `failurePolicy: Fail`.
+- Do not create Istio custom resources before wave `40` has installed a healthy `istiod`.
+- Put resources that depend on a CRD in a later wave than the CRD owner.
+- Put resources that depend on an admission webhook in a later wave than the controller serving that webhook.
+- Avoid adding new sync wave numbers unless the dependency cannot fit an existing band.
+
+Istio's chart defaults validating webhooks to `failurePolicy: Ignore` to avoid bootstrap deadlocks while `istiod` is not yet reachable. This platform declares `failurePolicy: Fail` because the desired steady-state posture is fail-closed validation. The rebuildability guardrail is ordering: Istio resources must not be created until after the Istio control plane wave is healthy.
+
 ## Suggested Repository Layout
 
 ```text
@@ -468,7 +506,10 @@ k8s-playground-argocd-apps/
 - [x] Validate that the Argo-managed tracer app is still reachable externally.
 - [x] Install cert-manager through Argo CD.
 - [x] Add a local issuer/certificate path through cert-manager.
-- [ ] Install Istio sidecar mode through Argo CD.
+- [x] Prepare Istio `base` and `istiod` Argo apps and local Helm render validations.
+- [x] Commit/push the Istio Argo apps changes and let Argo CD sync `istio-base` and `istiod`.
+- [x] Validate Istio sidecar-mode control plane health.
+- [x] Commit/push the Istio validating webhook `failurePolicy: Fail` values fix and confirm `istio-base` and `istiod` are `Synced` in Argo CD.
 - [ ] Optionally install Istio CNI through Argo CD.
 - [ ] Install Istio ingress gateway through Argo CD.
 - [ ] Configure Gateway API resources through Argo CD.
@@ -494,6 +535,7 @@ k8s-playground-argocd-apps/
 - Argo CD CRDs are registered: `Application`, `ApplicationSet`, and `AppProject`.
 - MetalLB remains managed by local kind bootstrap tasks, and Argo-managed apps can still use MetalLB-assigned LoadBalancer IPs.
 - Argo CD can manage the tracer app without breaking external reachability.
+- `mise run argocd:bootstrap-root` waits for every expected Argo child app to become `Synced` and `Healthy`.
 - cert-manager can issue a local certificate.
 - No plaintext sensitive Kubernetes Secret manifests are committed.
 - Istio control plane is healthy.
