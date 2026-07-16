@@ -48,13 +48,14 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Refactored `argocd:install` so Argo CD manifests are applied first, then independent component rollout checks run in parallel.
 - Added `scripts/wait-for-rollout.sh` so rollout waits poll frequently while printing periodic workload and pod status, then wired Argo CD waits and MetalLB controller/speaker waits through it. MetalLB now waits for the controller before the speaker because the speaker depends on controller-created startup state such as the `memberlist` Secret.
 - Populated `../k8s-playground-argocd-apps` with the initial `clusters/kind` root app-of-apps structure and the first child `Application` for `k8s-playground-service`.
-- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the expected child apps to become synced and healthy: `cert-manager`, `cert-manager-config`, `k8s-playground-service`, `istio-base`, and `istiod`.
+- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the expected child apps to become synced and healthy: `cert-manager`, `cert-manager-config`, `k8s-playground-service`, `istio-base`, `istiod`, and `istio-cni`.
 - Removed the direct `k8s-playground-service` manifests and `app:deploy` task from this repo after Argo CD adopted the service.
 - Installed cert-manager through Argo CD using the Jetstack Helm chart with values kept under `components/platform/cert-manager/` in the Argo apps repo.
 - Added and synced Argo-managed local cert-manager config: self-signed bootstrap issuer, local root CA certificate, local CA `ClusterIssuer`, and test certificate request.
 - Added Argo app definitions and Helm validation tasks for Istio `base` and `istiod` in `../k8s-playground-argocd-apps`, pinned to Istio `1.30.2`.
 - Synced Istio `base` and `istiod` through Argo CD. The Kubernetes control plane resources are healthy, with `deployment/istiod-stable` ready.
 - Declared Istio validating webhooks fail-closed with `base.validationFailurePolicy: Fail`, documented sync wave guardrails, and confirmed a full `mise run cluster:create` rebuild comes up successfully with Argo apps synced and healthy.
+- Installed Istio CNI as an Argo-managed child app at sync wave `45`, using the same Istio `1.30.2` version and `stable` revision as `istiod`. `istiod` values now set `cni.enabled: true`, and `daemonset/istio-cni-node` is healthy on all three kind nodes.
 
 Current local cluster tasks:
 
@@ -258,11 +259,8 @@ Required components:
 
 - `istio-base`
 - `istiod`
-- `istio-ingressgateway`
-
-Recommended component:
-
 - `istio-cni`
+- `istio-ingressgateway`
 
 Istio CNI is separate from the cluster CNI. It does not replace kindnet. It helps Istio configure pod traffic redirection without requiring privileged init containers in every workload pod.
 
@@ -426,6 +424,7 @@ Current wave structure:
 | `20` | Configuration consumed by core controllers, such as cert-manager issuers and certificates. |
 | `30` | Istio base APIs, CRDs, and validating webhook bootstrap. |
 | `40` | Istio control plane runtime, currently `istiod` with revision `stable`. |
+| `45` | Istio CNI node agent, installed after `istiod` and before meshed workloads. |
 | `50` | Istio ingress gateway or other mesh data-plane gateway components. |
 | `60` | Platform-owned mesh and ingress configuration, such as Gateway API resources and namespace-level mesh defaults. |
 | `70` | Application workloads and services. |
@@ -510,7 +509,7 @@ k8s-playground-argocd-apps/
 - [x] Commit/push the Istio Argo apps changes and let Argo CD sync `istio-base` and `istiod`.
 - [x] Validate Istio sidecar-mode control plane health.
 - [x] Commit/push the Istio validating webhook `failurePolicy: Fail` values fix and confirm `istio-base` and `istiod` are `Synced` in Argo CD.
-- [ ] Optionally install Istio CNI through Argo CD.
+- [x] Install Istio CNI through Argo CD.
 - [ ] Install Istio ingress gateway through Argo CD.
 - [ ] Configure Gateway API resources through Argo CD.
 - [ ] Move `k8s-playground-service` external traffic from direct LoadBalancer exposure to Istio ingress gateway and HTTPRoute.
@@ -539,6 +538,7 @@ k8s-playground-argocd-apps/
 - cert-manager can issue a local certificate.
 - No plaintext sensitive Kubernetes Secret manifests are committed.
 - Istio control plane is healthy.
+- Istio CNI DaemonSet is healthy on every schedulable node before sidecar injection is enabled for app workloads.
 - Istio ingress gateway is healthy.
 - App pods receive sidecars through revision-based injection.
 - App-to-app traffic uses mTLS.
@@ -592,7 +592,6 @@ Later app resources after Istio is introduced:
 
 ## Open Decisions
 
-- Should Istio CNI be included in the first Istio install?
 - What local domain should be used for apps?
 - Should future GitOps secret handling use SOPS/age, External Secrets Operator, or both for different secret classes?
 
@@ -614,3 +613,4 @@ Later app resources after Istio is introduced:
 - Do not store Argo CD `Application` definitions temporarily in this platform-config repo.
 - Install observability at the end, after the core app, MetalLB, Argo CD, Istio, Gateway API, mTLS, and authorization path is working.
 - Pin the tracer-bullet app image to `mblayman/k8s-playground-service:0.1.0` instead of `latest`.
+- Include Istio CNI in the sidecar-mode install so application pods do not require the privileged `istio-init` init container path for traffic redirection.
