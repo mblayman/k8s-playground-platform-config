@@ -17,11 +17,14 @@ mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_ve
 mise run argocd:install --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
+mise run gateway:wait --name {{ usage.name }}
 mise run app:smoke-test --name {{ usage.name }}
+mise run gateway:smoke-test --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
 mise run app:status --name {{ usage.name }}
 mise run istio:status --name {{ usage.name }}
+mise run gateway:status --name {{ usage.name }}
 mise run argocd:status --name {{ usage.name }}
 '''
 
@@ -228,7 +231,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="cert-manager cert-manager-config k8s-playground-service istio-base istiod istio-cni istio-ingressgateway"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''
@@ -323,6 +326,90 @@ flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
 run = '''
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get deployment,daemonset,pods,svc -o wide
 kubectl --context kind-{{ usage.name }} get crd authorizationpolicies.security.istio.io peerauthentications.security.istio.io virtualservices.networking.istio.io gateways.networking.istio.io
+'''
+
+[tasks."gateway:wait"]
+description = "Wait for Gateway API resources to be accepted"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--gateway-namespace <gateway-namespace>" help="Gateway namespace" default="istio-system"
+flag "--gateway <gateway>" help="Gateway name" default="k8s-playground-gateway"
+flag "--route-namespace <route-namespace>" help="HTTPRoute namespace" default="k8s-playground-service"
+flag "--route <route>" help="HTTPRoute name" default="k8s-playground-service"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} wait --for=condition=Established \
+  crd/gatewayclasses.gateway.networking.k8s.io \
+  crd/gateways.gateway.networking.k8s.io \
+  crd/httproutes.gateway.networking.k8s.io \
+  --timeout=300s
+
+kubectl --context kind-{{ usage.name }} wait gatewayclass/istio --for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait gateway/{{ usage.gateway }} --for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait gateway/{{ usage.gateway }} --for=jsonpath='{.status.conditions[?(@.type=="Programmed")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.route_namespace }} wait httproute/{{ usage.route }} --for=jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+'''
+
+[tasks."gateway:external-ip"]
+description = "Print the Istio ingress gateway LoadBalancer IP"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
+flag "--service <service>" help="gateway service name" default="istio-ingressgateway"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}{"\n"}'
+'''
+
+[tasks."gateway:smoke-test"]
+description = "Verify k8s-playground-service through Istio ingress gateway"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
+flag "--service <service>" help="gateway service name" default="istio-ingressgateway"
+flag "--expected <expected>" help="expected response body" default="Howdy from k8s-playground-service"
+'''
+run = '''
+ip=""
+for i in $(seq 1 60); do
+  ip="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+  if [ -n "$ip" ]; then
+    break
+  fi
+  sleep 2
+done
+
+if [ -z "$ip" ]; then
+  echo "Gateway LoadBalancer IP was not assigned" >&2
+  exit 1
+fi
+
+url="http://$ip/"
+expected="{{ usage.expected }}"
+
+body=""
+for i in $(seq 1 60); do
+  if body="$(curl --fail --silent "$url" 2>/dev/null)" && [ "$body" = "$expected" ]; then
+    echo "$url -> $body"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "Gateway did not return the expected response from $url within the timeout" >&2
+echo "Expected: $expected" >&2
+echo "Actual:   $body" >&2
+exit 1
+'''
+
+[tasks."gateway:status"]
+description = "Show Gateway API status"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} get gatewayclass,gateway,httproute --all-namespaces -o wide
+kubectl --context kind-{{ usage.name }} -n istio-system get service/istio-ingressgateway -o wide
 '''
 
 [tasks."kind:create"]

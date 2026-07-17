@@ -38,7 +38,15 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Pinned the app image to `mblayman/k8s-playground-service:0.1.0` because `latest` is not published on Docker Hub.
 - Set the app greeting to `Howdy` so the response is visibly non-default.
 - Added `mise` tasks for app status, external IP lookup, and smoke testing.
-- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and creates the kind cluster, bootstraps MetalLB, installs Argo CD, bootstraps the kind root app, waits for expected Argo child apps, verifies Istio control plane readiness, smoke tests the app, and shows status.
+- Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and:
+  - Creates the kind cluster.
+  - Bootstraps MetalLB.
+  - Installs Argo CD.
+  - Bootstraps the kind root app.
+  - Waits for expected Argo child apps.
+  - Verifies Istio and Gateway API readiness.
+  - Smoke tests direct and gateway app paths.
+  - Shows platform status.
 - Validated the tracer app through MetalLB at `http://172.21.255.200/`, returning `Howdy from k8s-playground-service`.
 - Created Argo CD namespace configuration under `platform/argocd/kind/`.
 - Added `mise` tasks for Argo CD install, status, initial admin password retrieval, and port-forwarding.
@@ -48,7 +56,16 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Refactored `argocd:install` so Argo CD manifests are applied first, then independent component rollout checks run in parallel.
 - Added `scripts/wait-for-rollout.sh` so rollout waits poll frequently while printing periodic workload and pod status, then wired Argo CD waits and MetalLB controller/speaker waits through it. MetalLB now waits for the controller before the speaker because the speaker depends on controller-created startup state such as the `memberlist` Secret.
 - Populated `../k8s-playground-argocd-apps` with the initial `clusters/kind` root app-of-apps structure and the first child `Application` for `k8s-playground-service`.
-- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for the expected child apps to become synced and healthy: `cert-manager`, `cert-manager-config`, `k8s-playground-service`, `istio-base`, `istiod`, `istio-cni`, and `istio-ingressgateway`.
+- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for expected child apps to become synced and healthy:
+  - `gateway-api-crds`
+  - `cert-manager`
+  - `cert-manager-config`
+  - `istio-base`
+  - `istiod`
+  - `istio-cni`
+  - `istio-ingressgateway`
+  - `gateway-api-config`
+  - `k8s-playground-service`
 - Removed the direct `k8s-playground-service` manifests and `app:deploy` task from this repo after Argo CD adopted the service.
 - Installed cert-manager through Argo CD using the Jetstack Helm chart with values kept under `components/platform/cert-manager/` in the Argo apps repo.
 - Added and synced Argo-managed local cert-manager config: self-signed bootstrap issuer, local root CA certificate, local CA `ClusterIssuer`, and test certificate request.
@@ -57,6 +74,10 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Declared Istio validating webhooks fail-closed with `base.validationFailurePolicy: Fail`, documented sync wave guardrails, and confirmed a full `mise run cluster:create` rebuild comes up successfully with Argo apps synced and healthy.
 - Installed Istio CNI as an Argo-managed child app at sync wave `45`, using the same Istio `1.30.2` version and `stable` revision as `istiod`. `istiod` values now set `cni.enabled: true`, and `daemonset/istio-cni-node` is healthy on all three kind nodes.
 - Installed Istio ingress gateway as an Argo-managed child app at sync wave `50`, using the Istio `gateway` Helm chart version `1.30.2`, release name `istio-ingressgateway`, and revision `stable`. The gateway Service is `type: LoadBalancer`, and MetalLB assigned external IP `172.21.255.201`.
+- Installed Gateway API CRDs as an independent Argo child app at sync wave `0`, using Gateway API `v1.6.0` standard CRDs from the upstream `kubernetes-sigs/gateway-api` repo.
+- Configured platform Gateway API resources at sync wave `60`: `GatewayClass/istio` and `Gateway/k8s-playground-gateway` in `istio-system`, manually linked to `Service/istio-ingressgateway` by hostname.
+- Added app-owned `HTTPRoute/k8s-playground-service` inside the existing `k8s-playground-service` app component. It uses a resource-level Argo sync wave so it stays close to the app manifests while applying after the app Service.
+- Validated the Gateway API route through Istio ingress gateway: `http://172.21.255.201/` returned `Howdy from k8s-playground-service`.
 
 Current local cluster tasks:
 
@@ -102,6 +123,15 @@ Current local Istio tasks:
 ```sh
 mise run istio:wait
 mise run istio:status
+```
+
+Current local Gateway API tasks:
+
+```sh
+mise run gateway:wait
+mise run gateway:external-ip
+mise run gateway:smoke-test
+mise run gateway:status
 ```
 
 The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
@@ -421,16 +451,16 @@ Current wave structure:
 
 | Wave | Purpose |
 | ---: | --- |
+| `0` | Cluster API extensions and CRDs not owned by an in-cluster controller app, such as Gateway API CRDs. |
 | `10` | Core platform controllers, such as cert-manager. |
 | `20` | Configuration consumed by core controllers, such as cert-manager issuers and certificates. |
 | `30` | Istio base APIs, CRDs, and validating webhook bootstrap. |
 | `40` | Istio control plane runtime, currently `istiod` with revision `stable`. |
 | `45` | Istio CNI node agent, installed after `istiod` and before meshed workloads. |
 | `50` | Istio ingress gateway or other mesh data-plane gateway components. |
-| `60` | Platform-owned mesh and ingress configuration, such as Gateway API resources and namespace-level mesh defaults. |
-| `70` | Application workloads and services. |
-| `80` | App-owned routes and mesh policies, such as `HTTPRoute`, `AuthorizationPolicy`, and `PeerAuthentication`. |
-| `90` | Observability components and dashboards. |
+| `60` | Platform-owned mesh and ingress configuration, such as `GatewayClass`, shared `Gateway`, and namespace-level mesh defaults. |
+| `70` | Application components, including workloads, services, and app-owned routes when internal resource ordering is sufficient. |
+| `80` | Observability components, dashboards, and late visualization resources. |
 
 Guardrails:
 
@@ -438,6 +468,7 @@ Guardrails:
 - Do not create Istio custom resources before wave `40` has installed a healthy `istiod`.
 - Put resources that depend on a CRD in a later wave than the CRD owner.
 - Put resources that depend on an admission webhook in a later wave than the controller serving that webhook.
+- Prefer resource-level sync waves inside an app component before splitting app-owned resources into separate child apps.
 - Avoid adding new sync wave numbers unless the dependency cannot fit an existing band.
 
 Istio's chart defaults validating webhooks to `failurePolicy: Ignore` to avoid bootstrap deadlocks while `istiod` is not yet reachable. This platform declares `failurePolicy: Fail` because the desired steady-state posture is fail-closed validation. The rebuildability guardrail is ordering: Istio resources must not be created until after the Istio control plane wave is healthy.
@@ -513,8 +544,10 @@ k8s-playground-argocd-apps/
 - [x] Install Istio CNI through Argo CD.
 - [x] Prepare Istio ingress gateway Argo app and local Helm render validation.
 - [x] Install Istio ingress gateway through Argo CD.
-- [ ] Configure Gateway API resources through Argo CD.
-- [ ] Move `k8s-playground-service` external traffic from direct LoadBalancer exposure to Istio ingress gateway and HTTPRoute.
+- [x] Prepare Gateway API CRDs, platform Gateway config, and app HTTPRoute manifests.
+- [x] Configure Gateway API resources through Argo CD.
+- [x] Validate `k8s-playground-service` external traffic through Istio ingress gateway and HTTPRoute.
+- [ ] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
 - [ ] Create or update the app namespace with revision-based sidecar injection.
 - [ ] Add strict mTLS for the app namespace.
 - [ ] Add default-deny AuthorizationPolicy for the app namespace.
@@ -543,6 +576,9 @@ k8s-playground-argocd-apps/
 - Istio CNI DaemonSet is healthy on every schedulable node before sidecar injection is enabled for app workloads.
 - Istio ingress gateway is healthy.
 - Istio ingress gateway `Service` receives a MetalLB LoadBalancer IP.
+- Gateway API CRDs are established.
+- `GatewayClass/istio`, `Gateway/k8s-playground-gateway`, and `HTTPRoute/k8s-playground-service` are accepted.
+- `mise run gateway:smoke-test` verifies the app through the Istio ingress gateway path.
 - App pods receive sidecars through revision-based injection.
 - App-to-app traffic uses mTLS.
 - Plaintext traffic to strict-mTLS workloads is rejected.
