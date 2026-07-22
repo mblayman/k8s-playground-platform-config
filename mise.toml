@@ -18,7 +18,6 @@ mise run argocd:install --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
 mise run gateway:wait --name {{ usage.name }}
-mise run app:smoke-test --name {{ usage.name }}
 mise run gateway:smoke-test --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
@@ -45,60 +44,6 @@ flag "--service <service>" help="app service name" default="k8s-playground-servi
 run = '''
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get deployment,pods,service -o wide
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get endpointslice -l kubernetes.io/service-name={{ usage.service }} -o wide
-'''
-
-[tasks."app:external-ip"]
-description = "Print the k8s-playground-service LoadBalancer IP"
-usage = '''
-flag "--name <name>" help="kind cluster name" default="k8s-playground"
-flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
-flag "--service <service>" help="app service name" default="k8s-playground-service"
-'''
-run = '''
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}{"\n"}'
-'''
-
-[tasks."app:smoke-test"]
-description = "Verify k8s-playground-service through its LoadBalancer IP"
-usage = '''
-flag "--name <name>" help="kind cluster name" default="k8s-playground"
-flag "--namespace <namespace>" help="app namespace" default="k8s-playground-service"
-flag "--service <service>" help="app service name" default="k8s-playground-service"
-flag "--expected <expected>" help="expected response body" default="Howdy from k8s-playground-service"
-'''
-run = '''
-ip=""
-for i in $(seq 1 60); do
-  ip="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-  if [ -n "$ip" ]; then
-    break
-  fi
-  sleep 2
-done
-
-if [ -z "$ip" ]; then
-  echo "LoadBalancer IP was not assigned" >&2
-  exit 1
-fi
-
-url="http://$ip/"
-expected="{{ usage.expected }}"
-
-body=""
-for i in $(seq 1 60); do
-  if body="$(curl --fail --silent "$url" 2>/dev/null)" && [ "$body" = "$expected" ]; then
-    echo "$url -> $body"
-    exit 0
-  fi
-  sleep 2
-done
-
-if [ "$body" != "$expected" ]; then
-  echo "Service did not return the expected response from $url within the timeout" >&2
-  echo "Expected: $expected" >&2
-  echo "Actual:   $body" >&2
-  exit 1
-fi
 '''
 
 [tasks."argocd:install"]

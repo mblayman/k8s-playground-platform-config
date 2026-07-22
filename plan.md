@@ -37,7 +37,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Initially added tracer-bullet app manifests under `apps/k8s-playground-service/tracer-bullet/`, then moved the app source of truth to `../k8s-playground-argocd-apps/components/apps/k8s-playground-service/` after Argo CD was introduced.
 - Pinned the app image to `mblayman/k8s-playground-service:0.1.0` because `latest` is not published on Docker Hub.
 - Set the app greeting to `Howdy` so the response is visibly non-default.
-- Added `mise` tasks for app status, external IP lookup, and smoke testing.
+- Added `mise` tasks for app status and gateway smoke testing.
 - Added `mise run cluster:create` as the current full bring-up task. It assumes no existing cluster and:
   - Creates the kind cluster.
   - Bootstraps MetalLB.
@@ -45,7 +45,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
   - Bootstraps the kind root app.
   - Waits for expected Argo child apps.
   - Verifies Istio and Gateway API readiness.
-  - Smoke tests direct and gateway app paths.
+  - Smoke tests the gateway app path.
   - Shows platform status.
 - Validated the tracer app through MetalLB at `http://172.21.255.200/`, returning `Howdy from k8s-playground-service`.
 - Created Argo CD namespace configuration under `platform/argocd/kind/`.
@@ -78,6 +78,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Configured platform Gateway API resources at sync wave `60`: `GatewayClass/istio` and `Gateway/k8s-playground-gateway` in `istio-system`, manually linked to `Service/istio-ingressgateway` by hostname.
 - Added app-owned `HTTPRoute/k8s-playground-service` inside the existing `k8s-playground-service` app component. It uses a resource-level Argo sync wave so it stays close to the app manifests while applying after the app Service.
 - Validated the Gateway API route through Istio ingress gateway: `http://172.21.255.201/` returned `Howdy from k8s-playground-service`.
+- Removed the temporary direct `LoadBalancer` exposure from `k8s-playground-service`; the app Service now uses the default `ClusterIP` type and external traffic goes through Istio ingress gateway. Verified `http://172.21.255.201/` still returns `Howdy from k8s-playground-service`.
 
 Current local cluster tasks:
 
@@ -103,8 +104,6 @@ mise run metallb:status
 Current local app tasks:
 
 ```sh
-mise run app:external-ip
-mise run app:smoke-test
 mise run app:status
 ```
 
@@ -547,7 +546,7 @@ k8s-playground-argocd-apps/
 - [x] Prepare Gateway API CRDs, platform Gateway config, and app HTTPRoute manifests.
 - [x] Configure Gateway API resources through Argo CD.
 - [x] Validate `k8s-playground-service` external traffic through Istio ingress gateway and HTTPRoute.
-- [ ] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
+- [x] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
 - [ ] Create or update the app namespace with revision-based sidecar injection.
 - [ ] Add strict mTLS for the app namespace.
 - [ ] Add default-deny AuthorizationPolicy for the app namespace.
@@ -563,7 +562,7 @@ k8s-playground-argocd-apps/
 - LoadBalancer services receive usable external addresses.
 - `mise run metallb:render-config` renders an `IPAddressPool` and `L2Advertisement` from the Docker `kind` network.
 - The first tracer-bullet app is reachable through a direct LoadBalancer service before Istio is installed.
-- `mise run app:smoke-test` verifies the direct LoadBalancer path and non-default greeting.
+- The initial direct LoadBalancer app smoke test was replaced by the Gateway API smoke test after ingress migration.
 - Argo CD is introduced only after the first tracer bullet works.
 - Argo CD pods are healthy in the `argocd` namespace.
 - Argo CD CRDs are registered: `Application`, `ApplicationSet`, and `AppProject`.
