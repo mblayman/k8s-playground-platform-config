@@ -1,0 +1,7 @@
+apiVersion: v2
+name: istio-ingressgateway
+version: 1.30.2
+dependencies:
+  - name: gateway
+    version: 1.30.2
+    repository: https://istio-release.storage.googleapis.com/charts

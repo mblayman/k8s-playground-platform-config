@@ -90,6 +90,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Moved the `istiod` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/istiod/` into this repo at `platform/istio/istiod/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 - Moved the `istio-cni` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/cni/` into this repo at `platform/istio/cni/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 - Moved the `istio-ingressgateway` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/ingressgateway/` into this repo at `platform/istio/ingressgateway/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
+- Converted Argo-managed Helm components in this repo into lightweight wrapper charts. Each wrapper owns its upstream chart repository, chart name, chart version, and values, so the Argo apps repo can point each Helm component at a single `platform-config` source path instead of combining an upstream chart source with a separate `$values` repo source.
+- Committed wrapper chart `Chart.lock` files for reproducible dependency digests while ignoring generated `charts/` archives so upstream Helm chart packages are not vendored into source control.
 
 Current local cluster tasks:
 

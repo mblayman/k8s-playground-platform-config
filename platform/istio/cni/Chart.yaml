@@ -1,0 +1,7 @@
+apiVersion: v2
+name: istio-cni
+version: 1.30.2
+dependencies:
+  - name: cni
+    version: 1.30.2
+    repository: https://istio-release.storage.googleapis.com/charts

@@ -1,4 +1,5 @@
-revision: stable
+gateway:
+  revision: stable
 
-labels:
-  gateway.networking.k8s.io/gateway-name: k8s-playground-gateway
+  labels:
+    gateway.networking.k8s.io/gateway-name: k8s-playground-gateway

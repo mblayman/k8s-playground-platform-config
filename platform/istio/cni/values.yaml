@@ -1,1 +1,2 @@
-revision: stable
+cni:
+  revision: stable
