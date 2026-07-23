@@ -1,0 +1,8 @@
+revision: stable
+
+cni:
+  enabled: true
+
+base:
+  # Fail closed in steady state. Sync waves keep Istio resources after istiod is ready.
+  validationFailurePolicy: Fail
