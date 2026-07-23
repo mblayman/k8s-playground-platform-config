@@ -58,6 +58,17 @@ helm template istio-cni cni \
   >/dev/null
 '''
 
+[tasks."validate:istio-ingressgateway"]
+description = "Render the Istio ingress gateway Helm chart with local values"
+run = '''
+helm template istio-ingressgateway gateway \
+  --repo https://istio-release.storage.googleapis.com/charts \
+  --version 1.30.2 \
+  --namespace istio-system \
+  --values platform/istio/ingressgateway/values.yaml \
+  >/dev/null
+'''
+
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
 run = '''
@@ -68,6 +79,7 @@ mise run validate:k8s-playground-service
 mise run validate:istio-base
 mise run validate:istiod
 mise run validate:istio-cni
+mise run validate:istio-ingressgateway
 '''
 
 [tasks."cluster:create"]

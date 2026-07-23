@@ -89,6 +89,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Moved the `istio-base` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/base/` into this repo at `platform/istio/base/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 - Moved the `istiod` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/istiod/` into this repo at `platform/istio/istiod/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 - Moved the `istio-cni` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/cni/` into this repo at `platform/istio/cni/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
+- Moved the `istio-ingressgateway` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/ingressgateway/` into this repo at `platform/istio/ingressgateway/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 
 Current local cluster tasks:
 
