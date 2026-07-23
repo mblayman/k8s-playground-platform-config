@@ -465,6 +465,7 @@ Current wave structure:
 | Wave | Purpose |
 | ---: | --- |
 | `0` | Cluster API extensions and CRDs not owned by an in-cluster controller app, such as Gateway API CRDs. |
+| `5` | Argo CD repository/config prerequisites needed before Helm-backed wrapper apps, such as public Helm repository Secrets. |
 | `10` | Core platform controllers, such as cert-manager. |
 | `20` | Configuration consumed by core controllers, such as cert-manager issuers and certificates. |
 | `30` | Istio base APIs, CRDs, and validating webhook bootstrap. |

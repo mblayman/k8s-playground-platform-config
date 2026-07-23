@@ -28,6 +28,8 @@ Commit `Chart.lock` files. They preserve dependency digests for reproducibility.
 
 Do not commit downloaded chart archives. `platform/**/charts/` is ignored intentionally so validation can download dependencies locally without vendoring upstream chart packages into source control.
 
+Argo CD still needs public Helm dependency repositories registered as Helm repositories. Steady-state repository Secrets live in `platform/argocd/repositories/` and are installed by the `argocd-repositories` child app from the Argo apps repo. Without those Secrets, Argo may treat dependency repository URLs such as `https://charts.jetstack.io` as Git repositories during UI/API revision metadata lookups and emit `git fetch` errors.
+
 When changing a wrapper chart:
 
 - Update `Chart.yaml` for upstream chart repo/name/version changes.

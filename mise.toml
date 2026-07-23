@@ -5,6 +5,14 @@ helm = "3.21.3"
 description = "Render the local cert-manager issuer and certificate config"
 run = "kubectl kustomize platform/cert-manager-config >/dev/null"
 
+[tasks."validate:argocd-kind-bootstrap"]
+description = "Render the kind Argo CD bootstrap resources"
+run = "kubectl kustomize bootstrap/argocd/kind >/dev/null"
+
+[tasks."validate:argocd-repositories"]
+description = "Render Argo CD repository registrations"
+run = "kubectl kustomize platform/argocd/repositories >/dev/null"
+
 [tasks."validate:cert-manager"]
 description = "Render the cert-manager wrapper Helm chart"
 run = '''
@@ -62,6 +70,8 @@ helm template istio-ingressgateway platform/istio/ingressgateway \
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
 run = '''
+mise run validate:argocd-kind-bootstrap
+mise run validate:argocd-repositories
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
