@@ -47,6 +47,17 @@ helm template istiod istiod \
   >/dev/null
 '''
 
+[tasks."validate:istio-cni"]
+description = "Render the Istio CNI Helm chart with local values"
+run = '''
+helm template istio-cni cni \
+  --repo https://istio-release.storage.googleapis.com/charts \
+  --version 1.30.2 \
+  --namespace istio-system \
+  --values platform/istio/cni/values.yaml \
+  >/dev/null
+'''
+
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
 run = '''
@@ -56,6 +67,7 @@ mise run validate:gateway-api-config
 mise run validate:k8s-playground-service
 mise run validate:istio-base
 mise run validate:istiod
+mise run validate:istio-cni
 '''
 
 [tasks."cluster:create"]
