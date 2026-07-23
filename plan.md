@@ -82,6 +82,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Moved kind-only MetalLB configuration under `clusters/kind/metallb/` and moved Argo CD empty-cluster bootstrap configuration under `bootstrap/argocd/` so the future `platform/` tree is reserved for steady-state Kubernetes platform components.
 - Moved the first Argo-managed desired-state component, `cert-manager-config`, from `../k8s-playground-argocd-apps/components/platform/cert-manager-config/` into this repo at `platform/cert-manager-config/`. The Argo apps repo now keeps only the `Application` wiring for that component.
 - Added local validation tasks for this split: `mise run validate:cert-manager-config` in this repo renders the Kustomize component, and the same task in `../k8s-playground-argocd-apps` verifies the `Application` source wiring and renders the referenced sibling path.
+- Added `mise run argocd:sync-app --app <name>` to force a child app sync after moving an existing Argo CD `Application` to a different source repo. This refreshes Argo CD operation metadata so the UI does not mix an old repo URL with a new commit SHA.
+- Moved the `cert-manager` Helm values from `../k8s-playground-argocd-apps/components/platform/cert-manager/` into this repo at `platform/cert-manager/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 
 Current local cluster tasks:
 
@@ -115,6 +117,7 @@ Current local Argo CD tasks:
 ```sh
 mise run argocd:install
 mise run argocd:bootstrap-root
+mise run argocd:sync-app
 mise run argocd:status
 mise run argocd:admin-password
 mise run argocd:port-forward

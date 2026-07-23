@@ -5,9 +5,24 @@ helm = "3.21.3"
 description = "Render the local cert-manager issuer and certificate config"
 run = "kubectl kustomize platform/cert-manager-config >/dev/null"
 
+[tasks."validate:cert-manager"]
+description = "Render the cert-manager Helm chart with local values"
+run = '''
+helm template cert-manager cert-manager \
+  --repo https://charts.jetstack.io \
+  --version v1.21.0 \
+  --namespace cert-manager \
+  --include-crds \
+  --values platform/cert-manager/values.yaml \
+  >/dev/null
+'''
+
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
-run = "mise run validate:cert-manager-config"
+run = '''
+mise run validate:cert-manager
+mise run validate:cert-manager-config
+'''
 
 [tasks."cluster:create"]
 description = "Create the kind cluster and bootstrap current platform"
@@ -175,6 +190,50 @@ flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 run = '''
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get pods,svc -o wide
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get applications.argoproj.io -o wide
+'''
+
+[tasks."argocd:sync-app"]
+description = "Force-sync an Argo CD Application and wait for it to settle"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
+flag "--app <app>" help="Argo CD Application name"
+flag "--timeout <timeout>" help="wait timeout in seconds" default="180"
+'''
+run = '''
+if [ -z "{{ usage.app }}" ]; then
+  echo "--app is required" >&2
+  exit 1
+fi
+
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} patch application {{ usage.app }} --type merge -p '{"operation":{"initiatedBy":{"username":"mise"},"sync":{"prune":true,"syncStrategy":{"hook":{}}}}}'
+
+deadline=$(( $(date +%s) + {{ usage.timeout }} ))
+while true; do
+  phase="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application {{ usage.app }} -o jsonpath='{.status.operationState.phase}' 2>/dev/null)"
+  operation="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application {{ usage.app }} -o jsonpath='{.operation}' 2>/dev/null)"
+
+  if [ "$phase" = "Succeeded" ] && [ -z "$operation" ]; then
+    break
+  fi
+
+  if [ "$phase" = "Failed" ] || [ "$phase" = "Error" ]; then
+    kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application {{ usage.app }} -o yaml
+    exit 1
+  fi
+
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    echo "Timed out waiting for application/{{ usage.app }} sync to finish" >&2
+    kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application {{ usage.app }} -o wide
+    exit 1
+  fi
+
+  sleep 2
+done
+
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.app }} --for=jsonpath='{.status.sync.status}'=Synced --timeout={{ usage.timeout }}s
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/{{ usage.app }} --for=jsonpath='{.status.health.status}'=Healthy --timeout={{ usage.timeout }}s
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application {{ usage.app }} -o wide
 '''
 
 [tasks."argocd:bootstrap-root"]
