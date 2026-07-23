@@ -25,6 +25,17 @@ run = "kubectl kustomize platform/gateway-api-config >/dev/null"
 description = "Render the k8s-playground-service app manifests"
 run = "kubectl kustomize apps/k8s-playground-service >/dev/null"
 
+[tasks."validate:istio-base"]
+description = "Render the Istio base Helm chart with local values"
+run = '''
+helm template istio-base base \
+  --repo https://istio-release.storage.googleapis.com/charts \
+  --version 1.30.2 \
+  --namespace istio-system \
+  --values platform/istio/base/values.yaml \
+  >/dev/null
+'''
+
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
 run = '''
@@ -32,6 +43,7 @@ mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
 mise run validate:k8s-playground-service
+mise run validate:istio-base
 '''
 
 [tasks."cluster:create"]
