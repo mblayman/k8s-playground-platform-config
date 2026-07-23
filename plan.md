@@ -80,6 +80,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Validated the Gateway API route through Istio ingress gateway: `http://172.21.255.201/` returned `Howdy from k8s-playground-service`.
 - Removed the temporary direct `LoadBalancer` exposure from `k8s-playground-service`; the app Service now uses the default `ClusterIP` type and external traffic goes through Istio ingress gateway. Verified `http://172.21.255.201/` still returns `Howdy from k8s-playground-service`.
 - Moved kind-only MetalLB configuration under `clusters/kind/metallb/` and moved Argo CD empty-cluster bootstrap configuration under `bootstrap/argocd/` so the future `platform/` tree is reserved for steady-state Kubernetes platform components.
+- Moved the first Argo-managed desired-state component, `cert-manager-config`, from `../k8s-playground-argocd-apps/components/platform/cert-manager-config/` into this repo at `platform/cert-manager-config/`. The Argo apps repo now keeps only the `Application` wiring for that component.
+- Added local validation tasks for this split: `mise run validate:cert-manager-config` in this repo renders the Kustomize component, and the same task in `../k8s-playground-argocd-apps` verifies the `Application` source wiring and renders the referenced sibling path.
 
 Current local cluster tasks:
 
@@ -492,6 +494,7 @@ bootstrap/
 
 platform/
   cert-manager/
+  cert-manager-config/
   istio/
     base/
     istiod/
@@ -512,6 +515,7 @@ k8s-playground-argocd-apps/
     kind/
       application.yaml
       apps/
+        cert-manager-config.yaml
         k8s-playground-service.yaml
   components/
     apps/

@@ -1,0 +1,10 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: local-ca
+  labels:
+    app.kubernetes.io/name: cert-manager-config
+    app.kubernetes.io/part-of: k8s-playground
+spec:
+  ca:
+    secretName: local-root-ca

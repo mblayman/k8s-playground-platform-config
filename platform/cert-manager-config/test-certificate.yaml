@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: local-test-certificate
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager-config
+    app.kubernetes.io/part-of: k8s-playground
+spec:
+  secretName: local-test-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - test.apps.k8s-playground.local
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
