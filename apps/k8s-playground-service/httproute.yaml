@@ -1,0 +1,23 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: k8s-playground-service
+  namespace: k8s-playground-service
+  labels:
+    app.kubernetes.io/name: k8s-playground-service
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  parentRefs:
+    - name: k8s-playground-gateway
+      namespace: istio-system
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: k8s-playground-service
+          port: 80

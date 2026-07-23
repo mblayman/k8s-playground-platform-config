@@ -21,12 +21,17 @@ helm template cert-manager cert-manager \
 description = "Render the platform Gateway API config"
 run = "kubectl kustomize platform/gateway-api-config >/dev/null"
 
+[tasks."validate:k8s-playground-service"]
+description = "Render the k8s-playground-service app manifests"
+run = "kubectl kustomize apps/k8s-playground-service >/dev/null"
+
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
 run = '''
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
+mise run validate:k8s-playground-service
 '''
 
 [tasks."cluster:create"]

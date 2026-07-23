@@ -85,6 +85,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added `mise run argocd:sync-app --app <name>` to force a child app sync after moving an existing Argo CD `Application` to a different source repo. This refreshes Argo CD operation metadata so the UI does not mix an old repo URL with a new commit SHA.
 - Moved the `cert-manager` Helm values from `../k8s-playground-argocd-apps/components/platform/cert-manager/` into this repo at `platform/cert-manager/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 - Moved `gateway-api-config` from `../k8s-playground-argocd-apps/components/platform/gateway-api-config/` into this repo at `platform/gateway-api-config/`. The Argo apps repo now keeps only the `Application` wiring for the platform Gateway API objects.
+- Moved `k8s-playground-service` from `../k8s-playground-argocd-apps/components/apps/k8s-playground-service/` into this repo at `apps/k8s-playground-service/`. The Argo apps repo now keeps only the `Application` wiring for the app component.
 
 Current local cluster tasks:
 
@@ -496,6 +497,9 @@ bootstrap/
       kustomization.yaml
       namespace.yaml
 
+apps/
+  k8s-playground-service/
+
 platform/
   cert-manager/
   cert-manager-config/
@@ -524,12 +528,6 @@ k8s-playground-argocd-apps/
         gateway-api-config.yaml
         k8s-playground-service.yaml
   components/
-    apps/
-      k8s-playground-service/
-        kustomization.yaml
-        namespace.yaml
-        deployment.yaml
-        service.yaml
     platform/
 ```
 
