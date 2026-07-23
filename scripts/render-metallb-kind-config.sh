@@ -6,7 +6,7 @@ namespace="metallb-system"
 pool_name="kind-pool"
 context=""
 apply="false"
-template="platform/metallb/kind/l2-config.yaml.tpl"
+template="clusters/kind/metallb/l2-config.yaml.tpl"
 
 usage() {
   printf 'Usage: %s [--network <name>] [--namespace <name>] [--pool-name <name>] [--context <context>] [--apply]\n' "$0" >&2

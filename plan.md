@@ -10,7 +10,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - CNI: kindnet, the default kind CNI
 - Service mesh: Istio sidecar mode
 - Ingress: Istio ingress gateway with Gateway API
-- LoadBalancer support: MetalLB
+- LoadBalancer support: MetalLB for kind; cloud-native load balancing for future GCP clusters
 - TLS: cert-manager
 - GitOps: Argo CD
 - Observability: Prometheus, Grafana, Kiali
@@ -31,7 +31,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided to use MetalLB layer 2 mode for kind. BGP mode is out of scope because this playground does not need to model bare-metal router peering.
 - Decided the MetalLB address pool should be derived from the actual Docker `kind` network during bring-up instead of hard-coding a subnet. Repeated cluster rebuilds and different host machines should remain automatable.
 - Decided to defer local domain name setup. The first tracer bullet should validate direct access by MetalLB-assigned IP.
-- Created kind-only MetalLB layer 2 config template at `platform/metallb/kind/l2-config.yaml.tpl`.
+- Created kind-only MetalLB layer 2 config template at `clusters/kind/metallb/l2-config.yaml.tpl`.
 - Created `scripts/render-metallb-kind-config.sh` to inspect the Docker `kind` network, derive a safe MetalLB IP range, render the MetalLB config, and optionally apply it.
 - Added `mise` tasks for MetalLB install, render-config, configure, bootstrap, and status.
 - Initially added tracer-bullet app manifests under `apps/k8s-playground-service/tracer-bullet/`, then moved the app source of truth to `../k8s-playground-argocd-apps/components/apps/k8s-playground-service/` after Argo CD was introduced.
@@ -48,7 +48,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
   - Smoke tests the gateway app path.
   - Shows platform status.
 - Validated the tracer app through MetalLB at `http://172.21.255.200/`, returning `Howdy from k8s-playground-service`.
-- Created Argo CD namespace configuration under `platform/argocd/kind/`.
+- Created Argo CD empty-cluster bootstrap namespace configuration under `bootstrap/argocd/kind/`.
 - Added `mise` tasks for Argo CD install, status, initial admin password retrieval, and port-forwarding.
 - Installed Argo CD `v3.4.4` into the current kind cluster.
 - Validated that Argo CD pods are healthy and the `Application`, `ApplicationSet`, and `AppProject` CRDs are registered.
@@ -79,6 +79,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added app-owned `HTTPRoute/k8s-playground-service` inside the existing `k8s-playground-service` app component. It uses a resource-level Argo sync wave so it stays close to the app manifests while applying after the app Service.
 - Validated the Gateway API route through Istio ingress gateway: `http://172.21.255.201/` returned `Howdy from k8s-playground-service`.
 - Removed the temporary direct `LoadBalancer` exposure from `k8s-playground-service`; the app Service now uses the default `ClusterIP` type and external traffic goes through Istio ingress gateway. Verified `http://172.21.255.201/` still returns `Howdy from k8s-playground-service`.
+- Moved kind-only MetalLB configuration under `clusters/kind/metallb/` and moved Argo CD empty-cluster bootstrap configuration under `bootstrap/argocd/` so the future `platform/` tree is reserved for steady-state Kubernetes platform components.
 
 Current local cluster tasks:
 
@@ -237,7 +238,7 @@ For example, if the Docker `kind` network is `172.21.0.0/16`, a reasonable gener
 Current implementation files:
 
 ```text
-platform/metallb/kind/l2-config.yaml.tpl
+clusters/kind/metallb/l2-config.yaml.tpl
 scripts/render-metallb-kind-config.sh
 ```
 
@@ -480,15 +481,16 @@ mise.toml
 clusters/
   kind/
     cluster.yaml
+    metallb/
+      l2-config.yaml.tpl
 
-platform/
+bootstrap/
   argocd/
     kind/
       kustomization.yaml
       namespace.yaml
-  metallb/
-    kind/
-      l2-config.yaml.tpl
+
+platform/
   cert-manager/
   istio/
     base/
@@ -637,7 +639,8 @@ Later app resources after Istio is introduced:
 
 - Do not create a separate infrastructure repo yet for the kind phase.
 - Keep local kind cluster configuration in this repo under `clusters/kind/`.
-- Keep platform Kubernetes resources such as MetalLB in this repo rather than a future infrastructure repo.
+- Keep kind-only Kubernetes support such as MetalLB in this repo under `clusters/kind/` until a future infrastructure repo is needed for cloud substrate resources.
+- Keep Argo CD empty-cluster install resources under `bootstrap/` because they start GitOps reconciliation before steady-state platform components exist.
 - Use top-level `mise.toml` for local operator tasks instead of command snippets in per-directory READMEs.
 - Deploy a rudimentary app before Istio so there is always a simple validator for platform changes.
 - Use MetalLB for kind LoadBalancer support and do not use cloud-provider-kind.

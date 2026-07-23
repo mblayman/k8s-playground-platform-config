@@ -52,7 +52,7 @@ usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--version <version>" help="Argo CD version" default="v3.4.4"
-flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="platform/argocd/kind"
+flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="bootstrap/argocd/kind"
 '''
 run = '''
 mise run argocd:apply --name {{ usage.name }} --namespace {{ usage.namespace }} --version {{ usage.version }} --path {{ usage.path }}
@@ -74,7 +74,7 @@ usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--version <version>" help="Argo CD version" default="v3.4.4"
-flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="platform/argocd/kind"
+flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="bootstrap/argocd/kind"
 '''
 run = '''
 kubectl --context kind-{{ usage.name }} apply -k {{ usage.path }}
