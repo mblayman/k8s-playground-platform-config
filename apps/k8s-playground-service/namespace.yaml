@@ -5,3 +5,4 @@ metadata:
   labels:
     app.kubernetes.io/name: k8s-playground-service
     app.kubernetes.io/part-of: k8s-playground
+    istio.io/rev: stable
