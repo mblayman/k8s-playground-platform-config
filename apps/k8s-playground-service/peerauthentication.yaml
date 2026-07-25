@@ -1,0 +1,11 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: k8s-playground-service
+  labels:
+    app.kubernetes.io/name: k8s-playground-service
+    app.kubernetes.io/part-of: k8s-playground
+spec:
+  mtls:
+    mode: STRICT

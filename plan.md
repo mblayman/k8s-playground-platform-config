@@ -92,6 +92,9 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Moved the `istio-ingressgateway` Helm values from `../k8s-playground-argocd-apps/components/platform/istio/ingressgateway/` into this repo at `platform/istio/ingressgateway/`. The Argo apps repo keeps the Helm `Application` wiring and references the values through a `$values` source pointed at this repo.
 - Converted Argo-managed Helm components in this repo into lightweight wrapper charts. Each wrapper owns its upstream chart repository, chart name, chart version, and values, so the Argo apps repo can point each Helm component at a single `platform-config` source path instead of combining an upstream chart source with a separate `$values` repo source.
 - Committed wrapper chart `Chart.lock` files for reproducible dependency digests while ignoring generated `charts/` archives so upstream Helm chart packages are not vendored into source control.
+- Added Argo-managed Helm repository registration under `platform/argocd/repositories/`, wired by the `argocd-repositories` child app, so public Helm dependency URLs used by wrapper charts are registered as Helm repos instead of being misclassified as Git repos by Argo CD metadata lookups.
+- Enabled revision-based Istio sidecar injection for the `k8s-playground-service` namespace with `istio.io/rev: stable`, restarted the app Deployment, and verified the new pods are connected to `istiod` as `proxy_type: sidecar` while the Gateway API smoke test still returns `Howdy from k8s-playground-service`.
+- Added desired-state strict mTLS for the `k8s-playground-service` namespace with `PeerAuthentication/default` and `mtls.mode: STRICT`. This has been locally validated, but still needs to be pushed, synced by Argo CD, and verified live with the gateway smoke test.
 
 Current local cluster tasks:
 
@@ -323,6 +326,8 @@ This gives a cleaner future upgrade path because multiple Istio control plane re
 ### mTLS
 
 Use strict mTLS for app namespaces.
+
+Current app target: `apps/k8s-playground-service/peerauthentication.yaml` declares namespace-scoped strict mTLS for `k8s-playground-service`. After pushing and syncing that app, verify the Gateway API path still works because the ingress gateway and app sidecars should negotiate Istio mTLS proxy-to-proxy.
 
 Start per namespace rather than mesh-wide:
 
@@ -564,8 +569,8 @@ k8s-playground-argocd-apps/
 - [x] Configure Gateway API resources through Argo CD.
 - [x] Validate `k8s-playground-service` external traffic through Istio ingress gateway and HTTPRoute.
 - [x] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
-- [ ] Create or update the app namespace with revision-based sidecar injection.
-- [ ] Add strict mTLS for the app namespace.
+- [x] Create or update the app namespace with revision-based sidecar injection.
+- [ ] Push, sync, and live-verify strict mTLS for the app namespace.
 - [ ] Add default-deny AuthorizationPolicy for the app namespace.
 - [ ] Allow ingress gateway traffic to the app with AuthorizationPolicy.
 - [ ] Validate external routing, sidecar injection, mTLS, and authorization.
