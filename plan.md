@@ -15,6 +15,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - GitOps: Argo CD
 - Observability: Prometheus, Grafana, Kiali
 - Policy: Istio mTLS and AuthorizationPolicy first; Kubernetes NetworkPolicy later
+- Protocols: HTTP/1.1 baseline now; HTTP/2 support planned after observability gives enough mesh visibility
 
 ## Current Progress
 
@@ -96,7 +97,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Enabled revision-based Istio sidecar injection for the `k8s-playground-service` namespace with `istio.io/rev: stable`, restarted the app Deployment, and verified the new pods are connected to `istiod` as `proxy_type: sidecar` while the Gateway API smoke test still returns `Howdy from k8s-playground-service`.
 - Added and live-verified strict mTLS for the `k8s-playground-service` namespace with `PeerAuthentication/default` and `mtls.mode: STRICT`. The Istio ingress gateway path still works through mTLS, and a non-meshed plaintext curl pod was rejected with `Connection reset by peer`.
 - Added a dedicated Kubernetes `ServiceAccount/k8s-playground-service` and configured the app Deployment to use it so Istio authorization can target the app with a specific workload identity instead of the namespace default service account.
-- Added desired-state Istio `AuthorizationPolicy/allow-ingress-gateway` for `k8s-playground-service`. The policy selects the app workload and allows only the `cluster.local/ns/istio-system/sa/istio-ingressgateway` principal to reach port `8080`; once synced, non-matching meshed callers should receive an Envoy RBAC denial.
+- Added and live-verified Istio `AuthorizationPolicy/allow-ingress-gateway` for `k8s-playground-service`. The policy selects the app workload and allows only the `cluster.local/ns/istio-system/sa/istio-ingressgateway` principal to reach port `8080`; the gateway path still works, non-meshed plaintext traffic is rejected by mTLS, and a separate meshed curl client receives `RBAC: access denied` with HTTP `403`.
+- Decided to support HTTP/2 as a future protocol-realism track, but not before the current security baseline and observability are in place. The preferred sequence is observability first, then mesh-only HTTP/2 upgrade experiments, then optional end-to-end h2c support in the Go app.
 
 Current local cluster tasks:
 
@@ -368,7 +370,7 @@ Baseline model:
 - Explicitly allow ingress gateway to call exposed apps
 - Explicitly allow monitoring to call health endpoints
 
-Current app target: `apps/k8s-playground-service/authorizationpolicy.yaml` declares the first allow-list rule for `k8s-playground-service`. Because an `ALLOW` policy selects the workload, non-matching traffic to that workload is denied by default. After pushing and syncing, verify the external gateway path still works and a separate meshed test client is denied.
+Current app target: `apps/k8s-playground-service/authorizationpolicy.yaml` declares the first allow-list rule for `k8s-playground-service`. Because an `ALLOW` policy selects the workload, non-matching traffic to that workload is denied by default. The external gateway path still works and a separate meshed test client is denied.
 
 Example intent:
 
@@ -450,6 +452,28 @@ Healthcare/security caution:
 - Do not log PHI in URLs, headers, labels, traces, metrics, or access logs.
 - Be careful with high-cardinality labels.
 - Review what telemetry leaves the cluster.
+
+### HTTP/2 Protocol Support
+
+Support HTTP/2 eventually, but do not make it part of the immediate mTLS and authorization baseline.
+
+The current app path may stay HTTP/1.1 while the platform adds observability. That keeps security behavior easy to reason about before changing protocol behavior.
+
+Preferred sequence:
+
+- Install and validate Prometheus, Grafana, and Kiali first.
+- Use observability to capture the baseline HTTP/1.1 mesh path.
+- Experiment with ingress-gateway-to-app-sidecar HTTP/2 over Istio mTLS using an Istio `DestinationRule`, likely starting with `connectionPool.http.h2UpgradePolicy: UPGRADE` for `k8s-playground-service`.
+- Verify protocol behavior through Envoy/Istio telemetry before making the change a default pattern.
+- Optionally update the Go app to support h2c so the app sidecar can also use HTTP/2 cleartext to the app container.
+- If h2c is adopted, make the Service protocol metadata explicit with `appProtocol: kubernetes.io/h2c`.
+
+Protocol notes:
+
+- ALPN negotiates HTTP/2 during a TLS handshake and is the normal external browser path for HTTP/2.
+- h2c is HTTP/2 without TLS and is mainly useful for internal cleartext hops, such as sidecar-to-app when the local application supports it.
+- Istio mTLS already protects proxy-to-proxy traffic; cert-manager is not involved in Istio workload mTLS.
+- Proxy-to-proxy HTTP/2 can be tested before requiring the app container itself to speak h2c.
 
 ### GitOps And Argo CD
 
@@ -589,10 +613,14 @@ k8s-playground-argocd-apps/
 - [x] Create or update the app namespace with revision-based sidecar injection.
 - [x] Push, sync, and live-verify strict mTLS for the app namespace.
 - [x] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for scratch rebuild ordering.
-- [ ] Push, sync, and live-verify ingress-gateway-only AuthorizationPolicy for the app workload.
-- [ ] Validate external routing, sidecar injection, mTLS, and authorization.
+- [x] Push, sync, and live-verify ingress-gateway-only AuthorizationPolicy for the app workload.
+- [x] Validate external routing, sidecar injection, mTLS, and authorization.
 - [ ] Install Prometheus, Grafana, and Kiali through Argo CD.
 - [ ] Validate observability after the platform traffic path is already working.
+- [ ] Capture baseline HTTP/1.1 mesh behavior through observability before changing protocols.
+- [ ] Experiment with ingress-gateway-to-app-sidecar HTTP/2 over Istio mTLS using a targeted `DestinationRule`.
+- [ ] Decide whether to keep mesh-only HTTP/2 or add app-container h2c support in `k8s-playground-service`.
+- [ ] If app h2c is adopted, rebuild the service image and mark the Service protocol explicitly with `appProtocol: kubernetes.io/h2c`.
 - [ ] Revisit secrets-management hardening later when the playground needs non-TLS app credentials, private repo credentials, or cloud-provider secrets. Candidate approaches remain SOPS/age and External Secrets Operator.
 
 ## Validation Checklist
@@ -625,6 +653,9 @@ k8s-playground-argocd-apps/
 - The app is reachable through the Gateway API route after the Istio migration.
 - Prometheus receives Istio metrics.
 - Kiali shows the app and gateway traffic.
+- HTTP/1.1 baseline protocol behavior is visible before HTTP/2 changes are introduced.
+- If a mesh HTTP/2 experiment is enabled, telemetry confirms ingress-gateway-to-app-sidecar protocol behavior over Istio mTLS.
+- If h2c is enabled in the app, the app still serves HTTP/1.1 clients unless there is a deliberate reason to remove that compatibility.
 
 ## First App Target
 
@@ -690,5 +721,6 @@ Later app resources after Istio is introduced:
 - Create `k8s-playground-argocd-apps` when it is time to introduce Argo CD.
 - Do not store Argo CD `Application` definitions temporarily in this platform-config repo.
 - Install observability at the end, after the core app, MetalLB, Argo CD, Istio, Gateway API, mTLS, and authorization path is working.
+- Support HTTP/2 later, after observability is installed, starting with a reversible mesh-only experiment before changing the Go app to support h2c.
 - Pin the tracer-bullet app image to `mblayman/k8s-playground-service:0.1.0` instead of `latest`.
 - Include Istio CNI in the sidecar-mode install so application pods do not require the privileged `istio-init` init container path for traffic redirection.
