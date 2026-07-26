@@ -17,6 +17,7 @@ spec:
         app.kubernetes.io/name: k8s-playground-service
         app.kubernetes.io/part-of: k8s-playground
     spec:
+      serviceAccountName: k8s-playground-service
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

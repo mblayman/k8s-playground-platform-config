@@ -94,7 +94,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Committed wrapper chart `Chart.lock` files for reproducible dependency digests while ignoring generated `charts/` archives so upstream Helm chart packages are not vendored into source control.
 - Added Argo-managed Helm repository registration under `platform/argocd/repositories/`, wired by the `argocd-repositories` child app, so public Helm dependency URLs used by wrapper charts are registered as Helm repos instead of being misclassified as Git repos by Argo CD metadata lookups.
 - Enabled revision-based Istio sidecar injection for the `k8s-playground-service` namespace with `istio.io/rev: stable`, restarted the app Deployment, and verified the new pods are connected to `istiod` as `proxy_type: sidecar` while the Gateway API smoke test still returns `Howdy from k8s-playground-service`.
-- Added desired-state strict mTLS for the `k8s-playground-service` namespace with `PeerAuthentication/default` and `mtls.mode: STRICT`. This has been locally validated, but still needs to be pushed, synced by Argo CD, and verified live with the gateway smoke test.
+- Added and live-verified strict mTLS for the `k8s-playground-service` namespace with `PeerAuthentication/default` and `mtls.mode: STRICT`. The Istio ingress gateway path still works through mTLS, and a non-meshed plaintext curl pod was rejected with `Connection reset by peer`.
+- Added a dedicated Kubernetes `ServiceAccount/k8s-playground-service` and configured the app Deployment to use it so Istio authorization can target the app with a specific workload identity instead of the namespace default service account.
 
 Current local cluster tasks:
 
@@ -327,7 +328,7 @@ This gives a cleaner future upgrade path because multiple Istio control plane re
 
 Use strict mTLS for app namespaces.
 
-Current app target: `apps/k8s-playground-service/peerauthentication.yaml` declares namespace-scoped strict mTLS for `k8s-playground-service`. After pushing and syncing that app, verify the Gateway API path still works because the ingress gateway and app sidecars should negotiate Istio mTLS proxy-to-proxy.
+Current app target: `apps/k8s-playground-service/peerauthentication.yaml` declares namespace-scoped strict mTLS for `k8s-playground-service`. The Gateway API path works because the ingress gateway and app sidecars negotiate Istio mTLS proxy-to-proxy.
 
 Start per namespace rather than mesh-wide:
 
@@ -345,6 +346,19 @@ spec:
 ### Authorization
 
 Use Istio AuthorizationPolicy as the first policy layer.
+
+Use explicit Kubernetes service accounts for workloads before writing authorization policies. Istio derives workload identity from namespace and service account, so `k8s-playground-service` should use `cluster.local/ns/k8s-playground-service/sa/k8s-playground-service` instead of sharing `cluster.local/ns/k8s-playground-service/sa/default` with any future pod that might land in the namespace.
+
+App components that contain their own namespace, workload identity, workload, mesh policy, and route should use resource-level sync waves so scratch rebuilds are deterministic:
+
+| App Resource Wave | Purpose |
+| ---: | --- |
+| `-20` | Namespace and injection labels, so pods are created in a sidecar-injected namespace. |
+| `-10` | Service accounts and other workload identities. |
+| `0` | Service and Deployment workloads. Argo should let the Deployment become healthy before later waves. |
+| `10` | Destination mesh policy such as `PeerAuthentication` after sidecar-injected pods exist. |
+| `20` | Authorization policy, once workload identities and mTLS are active. |
+| `30` | App-owned routes such as `HTTPRoute`, after mesh policy and authorization are in place. |
 
 Baseline model:
 
@@ -570,7 +584,8 @@ k8s-playground-argocd-apps/
 - [x] Validate `k8s-playground-service` external traffic through Istio ingress gateway and HTTPRoute.
 - [x] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
 - [x] Create or update the app namespace with revision-based sidecar injection.
-- [ ] Push, sync, and live-verify strict mTLS for the app namespace.
+- [x] Push, sync, and live-verify strict mTLS for the app namespace.
+- [ ] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for scratch rebuild ordering.
 - [ ] Add default-deny AuthorizationPolicy for the app namespace.
 - [ ] Allow ingress gateway traffic to the app with AuthorizationPolicy.
 - [ ] Validate external routing, sidecar injection, mTLS, and authorization.
