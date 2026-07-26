@@ -1,0 +1,24 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress-gateway
+  namespace: k8s-playground-service
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+  labels:
+    app.kubernetes.io/name: k8s-playground-service
+    app.kubernetes.io/part-of: k8s-playground
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-playground-service
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/istio-system/sa/istio-ingressgateway
+      to:
+        - operation:
+            ports:
+              - "8080"

@@ -96,6 +96,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Enabled revision-based Istio sidecar injection for the `k8s-playground-service` namespace with `istio.io/rev: stable`, restarted the app Deployment, and verified the new pods are connected to `istiod` as `proxy_type: sidecar` while the Gateway API smoke test still returns `Howdy from k8s-playground-service`.
 - Added and live-verified strict mTLS for the `k8s-playground-service` namespace with `PeerAuthentication/default` and `mtls.mode: STRICT`. The Istio ingress gateway path still works through mTLS, and a non-meshed plaintext curl pod was rejected with `Connection reset by peer`.
 - Added a dedicated Kubernetes `ServiceAccount/k8s-playground-service` and configured the app Deployment to use it so Istio authorization can target the app with a specific workload identity instead of the namespace default service account.
+- Added desired-state Istio `AuthorizationPolicy/allow-ingress-gateway` for `k8s-playground-service`. The policy selects the app workload and allows only the `cluster.local/ns/istio-system/sa/istio-ingressgateway` principal to reach port `8080`; once synced, non-matching meshed callers should receive an Envoy RBAC denial.
 
 Current local cluster tasks:
 
@@ -367,6 +368,8 @@ Baseline model:
 - Explicitly allow ingress gateway to call exposed apps
 - Explicitly allow monitoring to call health endpoints
 
+Current app target: `apps/k8s-playground-service/authorizationpolicy.yaml` declares the first allow-list rule for `k8s-playground-service`. Because an `ALLOW` policy selects the workload, non-matching traffic to that workload is denied by default. After pushing and syncing, verify the external gateway path still works and a separate meshed test client is denied.
+
 Example intent:
 
 ```text
@@ -585,9 +588,8 @@ k8s-playground-argocd-apps/
 - [x] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
 - [x] Create or update the app namespace with revision-based sidecar injection.
 - [x] Push, sync, and live-verify strict mTLS for the app namespace.
-- [ ] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for scratch rebuild ordering.
-- [ ] Add default-deny AuthorizationPolicy for the app namespace.
-- [ ] Allow ingress gateway traffic to the app with AuthorizationPolicy.
+- [x] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for scratch rebuild ordering.
+- [ ] Push, sync, and live-verify ingress-gateway-only AuthorizationPolicy for the app workload.
 - [ ] Validate external routing, sidecar injection, mTLS, and authorization.
 - [ ] Install Prometheus, Grafana, and Kiali through Argo CD.
 - [ ] Validate observability after the platform traffic path is already working.
