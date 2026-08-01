@@ -101,6 +101,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided to support HTTP/2 as a future protocol-realism track, but not before the current security baseline and observability are in place. The preferred sequence is observability first, then mesh-only HTTP/2 upgrade experiments, then optional end-to-end h2c support in the Go app.
 - Decided the observability track should use a robust Grafana stack rather than Prometheus as the primary collector. The preferred local kind stack is Grafana Alloy for collection, Mimir for metrics, Loki for logs, Tempo for traces, Pyroscope for profiling, Beyla for eBPF-derived telemetry, and MinIO as kind-local object storage backing services that would use real object storage in cloud clusters.
 - Decided observability foundations should be ordered before application workloads in Argo sync waves. The current live cluster is adding observability after the app because the app already exists, but a scratch rebuild should bring MinIO, Mimir, Alloy, Grafana, and core collectors online before app wave `70`.
+- Started the object-storage foundation by adding an Argo-managed MinIO wrapper chart at `platform/minio`, using the official MinIO chart in kind-friendly standalone mode with a local bootstrap-created root credential Secret. MinIO is generic platform object storage; observability is the first expected consumer but not part of MinIO's component identity.
+- Added desired-state observability bucket bootstrap config under `platform/observability/object-storage-config`. It is a separate wave `20` component that creates the `mimir`, `loki`, `tempo`, and `pyroscope` buckets in MinIO without making those buckets part of the generic MinIO chart values.
 
 Current local cluster tasks:
 
@@ -576,7 +578,7 @@ Current wave structure:
 | ---: | --- |
 | `0` | Cluster API extensions and CRDs not owned by an in-cluster controller app, such as Gateway API CRDs. |
 | `5` | Argo CD repository/config prerequisites needed before Helm-backed wrapper apps, such as public Helm repository Secrets. |
-| `10` | Core platform foundations that do not depend on Istio, such as cert-manager and kind-local observability storage with MinIO. |
+| `10` | Core platform foundations that do not depend on Istio, such as cert-manager and kind-local object storage with MinIO. |
 | `20` | Configuration consumed by core foundations, such as cert-manager issuers/certificates and MinIO buckets or backend object-storage credentials. |
 | `25` | Core observability metrics storage that should exist before workloads, starting with Mimir. |
 | `30` | Istio base APIs, CRDs, and validating webhook bootstrap. |
@@ -687,7 +689,7 @@ k8s-playground-argocd-apps/
 - [x] Validate external routing, sidecar injection, mTLS, and authorization.
 - [ ] Prepare Argo-managed observability wiring and wrapper charts for the Grafana stack, using waves below app wave `70` for foundational storage, backends, collectors, and Grafana.
 - [ ] Add local bootstrap support for observability Secrets if MinIO or backend credentials cannot be generated safely from declarative non-secret config.
-- [ ] Install kind-local MinIO for observability object storage backing services.
+- [ ] Install kind-local MinIO as generic platform object storage for observability and future platform consumers.
 - [ ] Install Mimir through Argo CD for metrics storage.
 - [ ] Install Alloy for Kubernetes and node metrics collection before app-specific telemetry.
 - [ ] Install Grafana through Argo CD with declarative datasources and dashboards.

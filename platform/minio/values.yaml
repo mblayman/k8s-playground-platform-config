@@ -1,0 +1,41 @@
+minio:
+  mode: standalone
+  replicas: 1
+  drivesPerNode: 1
+
+  existingSecret: minio-root-credentials
+
+  persistence:
+    enabled: true
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  serviceAccount:
+    create: true
+    name: minio
+
+  service:
+    type: ClusterIP
+    port: "9000"
+
+  consoleService:
+    type: ClusterIP
+    port: "9001"
+
+  users: []
+  svcaccts: []
+  policies: []
+  buckets: []
+
+  metrics:
+    serviceMonitor:
+      enabled: false
+
+  networkPolicy:
+    enabled: false

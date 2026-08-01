@@ -13,6 +13,19 @@ run = "kubectl kustomize bootstrap/argocd/kind >/dev/null"
 description = "Render Argo CD repository registrations"
 run = "kubectl kustomize platform/argocd/repositories >/dev/null"
 
+[tasks."validate:minio"]
+description = "Render the MinIO wrapper Helm chart"
+run = '''
+helm dependency update platform/minio >/dev/null
+helm template minio platform/minio \
+  --namespace minio \
+  >/dev/null
+'''
+
+[tasks."validate:observability-object-storage-config"]
+description = "Render observability object storage bucket config"
+run = "kubectl kustomize platform/observability/object-storage-config >/dev/null"
+
 [tasks."validate:cert-manager"]
 description = "Render the cert-manager wrapper Helm chart"
 run = '''
@@ -72,6 +85,8 @@ description = "Run all platform-config validation tasks"
 run = '''
 mise run validate:argocd-kind-bootstrap
 mise run validate:argocd-repositories
+mise run validate:minio
+mise run validate:observability-object-storage-config
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
@@ -96,6 +111,7 @@ run = '''
 mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
 mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
 mise run argocd:install --name {{ usage.name }}
+mise run minio:bootstrap-secrets --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
 mise run gateway:wait --name {{ usage.name }}
@@ -114,6 +130,29 @@ usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 '''
 run = "mise run kind:delete --name {{ usage.name }}"
+
+[tasks."minio:bootstrap-secrets"]
+description = "Create local-only MinIO Secrets required before Argo sync"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="MinIO namespace" default="minio"
+flag "--minio-root-secret <minio-root-secret>" help="MinIO root credentials Secret name" default="minio-root-credentials"
+flag "--minio-root-user <minio-root-user>" help="MinIO root username" default="minioadmin"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+
+if kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get secret {{ usage.minio_root_secret }} >/dev/null 2>&1; then
+  printf 'Secret %s/%s already exists; leaving it unchanged\n' '{{ usage.namespace }}' '{{ usage.minio_root_secret }}'
+  exit 0
+fi
+
+password="$(openssl rand -base64 32)"
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} create secret generic {{ usage.minio_root_secret }} \
+  --from-literal=rootUser='{{ usage.minio_root_user }}' \
+  --from-literal=rootPassword="$password" \
+  --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+'''
 
 [tasks."app:status"]
 description = "Show k8s-playground-service status"
@@ -301,7 +340,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''
