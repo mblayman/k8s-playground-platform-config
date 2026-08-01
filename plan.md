@@ -103,6 +103,9 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided observability foundations should be ordered before application workloads in Argo sync waves. The current live cluster is adding observability after the app because the app already exists, but a scratch rebuild should bring MinIO, Mimir, Alloy, Grafana, and core collectors online before app wave `70`.
 - Started the object-storage foundation by adding an Argo-managed MinIO wrapper chart at `platform/minio`, using the official MinIO chart in kind-friendly standalone mode with a local bootstrap-created root credential Secret. MinIO is generic platform object storage; observability is the first expected consumer but not part of MinIO's component identity.
 - Added desired-state observability bucket bootstrap config under `platform/observability/object-storage-config`. It is a separate wave `20` component that creates the `mimir`, `loki`, `tempo`, and `pyroscope` buckets in MinIO without making those buckets part of the generic MinIO chart values.
+- Decided to start Mimir with an explicit single tenant, `k8s-playground`, so Alloy writes and Grafana queries model Mimir's real `X-Scope-OrgID` tenancy without creating unnecessary team/app tenant complexity.
+- Decided the first Mimir deployment may use single-binary mode for kind. This keeps the local metrics backend understandable while still using Mimir's real write, ingest, query, ruler, and object-storage concepts. Revisit a split microservices-style Mimir deployment later after the metrics path is working.
+- Decided alerting should use Mimir ruler plus Alertmanager as the primary learning and production-aligned path, not Grafana Alerting as the default. Grafana remains the visualization UI and can display alert state, but Alertmanager concepts are the priority for platform-team readiness.
 
 Current local cluster tasks:
 
@@ -472,6 +475,22 @@ Collection model:
 - Collect Kubernetes and node metrics before app-specific telemetry.
 - Accept scrape compatibility where Kubernetes, Istio, Envoy, kubelet, or exporter ecosystems still require it. Avoid app-owned `/metrics` scraping as the default application pattern, but do not make zero scraping a hard requirement.
 
+Mimir tenancy model:
+
+- Use one explicit initial tenant: `k8s-playground`.
+- Configure Alloy writes and Grafana reads to include the tenant header `X-Scope-OrgID: k8s-playground` where required by Mimir.
+- Treat a Mimir tenant as an operational ownership and isolation boundary, not as a direct copy of every Kubernetes namespace or Deployment.
+- For real platform-team use, prefer a `platform` tenant for Kubernetes, node, ingress, mesh, storage, collector, and control-plane metrics.
+- Add app/team tenants only when separate ownership, limits, retention, access control, noisy-neighbor isolation, or compliance boundaries justify the extra complexity.
+
+Mimir deployment model:
+
+- Start with Mimir single-binary mode for kind/local.
+- Use MinIO object storage even in single-binary mode so the local deployment still exercises the object-storage-backed architecture.
+- Keep ruler and Alertmanager capabilities available or easy to enable because alerting is part of the learning goal.
+- Do not start with the full production-style split deployment of distributors, ingesters, queriers, query-frontends, store-gateways, compactors, rulers, and Alertmanager components unless the chart requires it.
+- Revisit split deployment later when there is value in learning component-level scaling, failure modes, ring behavior, or production operations.
+
 Recommended sequence:
 
 - Create the `observability` namespace and Argo wiring.
@@ -504,12 +523,22 @@ Initial dashboards:
 
 Alerts and alarms need a dedicated design pass because they are a separate operational discipline, not just dashboards with thresholds.
 
+Use Mimir ruler plus Alertmanager as the primary alerting path:
+
+```text
+Mimir ruler evaluates PromQL alert rules
+  -> Alertmanager groups, deduplicates, inhibits, silences, and routes notifications
+```
+
+Grafana should still show dashboards, annotate/explore alert context, and possibly display alert state, but Grafana Alerting is not the default alert evaluator for this playground phase.
+
 Alerting topics to design:
 
-- Where alert rules live: Grafana-managed rules, Mimir ruler, Loki ruler, or a mix.
+- Where alert rules live in Git and how they are loaded into Mimir ruler.
+- How Alertmanager config is managed declaratively without committing sensitive receiver credentials.
 - How notifications are routed locally versus in cloud clusters.
 - Which local notification target to use first, if any.
-- Whether Alertmanager is needed or whether Grafana Alerting is sufficient for this playground phase.
+- How alert grouping, deduplication, inhibition, silences, repeat intervals, and escalation should work.
 - Baseline alert categories: cluster/node health, workload availability, ingress availability, high error rate, high latency, mTLS/authz denials, storage/backend health, collector health, and missing telemetry.
 - HIPAA caution: alert labels and messages must not include PHI or sensitive request data.
 
@@ -688,11 +717,14 @@ k8s-playground-argocd-apps/
 - [x] Push, sync, and live-verify ingress-gateway-only AuthorizationPolicy for the app workload.
 - [x] Validate external routing, sidecar injection, mTLS, and authorization.
 - [ ] Prepare Argo-managed observability wiring and wrapper charts for the Grafana stack, using waves below app wave `70` for foundational storage, backends, collectors, and Grafana.
-- [ ] Add local bootstrap support for observability Secrets if MinIO or backend credentials cannot be generated safely from declarative non-secret config.
-- [ ] Install kind-local MinIO as generic platform object storage for observability and future platform consumers.
-- [ ] Install Mimir through Argo CD for metrics storage.
+- [x] Add local bootstrap support for MinIO root credentials that cannot be committed to Git.
+- [x] Install kind-local MinIO as generic platform object storage for observability and future platform consumers.
+- [x] Add Argo-managed observability object-storage config for the `mimir`, `loki`, `tempo`, and `pyroscope` buckets.
+- [ ] Install Mimir through Argo CD for metrics storage, starting with single-binary mode and explicit tenant `k8s-playground`.
 - [ ] Install Alloy for Kubernetes and node metrics collection before app-specific telemetry.
+- [ ] Configure Alloy to remote-write metrics to Mimir with tenant `k8s-playground`.
 - [ ] Install Grafana through Argo CD with declarative datasources and dashboards.
+- [ ] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
 - [ ] Expose Grafana through a MetalLB-backed `LoadBalancer` Service and configure authentication without committing plaintext credentials.
 - [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
 - [ ] Install Pyroscope for profiling.
@@ -700,7 +732,8 @@ k8s-playground-argocd-apps/
 - [ ] Install Tempo after the metrics path is working.
 - [ ] Wire Istio and app trace export to Alloy or the chosen collector endpoint.
 - [ ] Add app OTLP metrics/traces only after Kubernetes and node collection is stable.
-- [ ] Design alerts/alarms separately before treating dashboards as operational coverage.
+- [ ] Design alerting around Mimir ruler plus Alertmanager before treating dashboards as operational coverage.
+- [ ] Add initial Git-managed platform alert rules and Alertmanager routing/silence strategy without committing sensitive receiver credentials.
 - [ ] Validate observability after the platform traffic path is already working.
 - [ ] Capture baseline HTTP/1.1 mesh behavior through observability before changing protocols.
 - [ ] Experiment with ingress-gateway-to-app-sidecar HTTP/2 over Istio mTLS using a targeted `DestinationRule`.
@@ -737,7 +770,9 @@ k8s-playground-argocd-apps/
 - Explicit AuthorizationPolicy allows intended ingress traffic.
 - The app is reachable through the Gateway API route after the Istio migration.
 - MinIO is available as the kind-local object storage backend for observability services that need object storage.
-- Mimir receives Kubernetes and node metrics collected through Alloy.
+- Mimir uses explicit tenant `k8s-playground` for the initial local playground metrics path.
+- Mimir starts in single-binary mode for kind while still using MinIO object storage.
+- Mimir receives Kubernetes and node metrics collected through Alloy for tenant `k8s-playground`.
 - On a scratch rebuild, Mimir and Alloy are healthy before application wave `70` syncs workloads.
 - Grafana is reachable through a MetalLB external IP and requires authentication.
 - Grafana datasources are provisioned declaratively for installed backends.
@@ -746,7 +781,8 @@ k8s-playground-argocd-apps/
 - Beyla is evaluated for eBPF-derived telemetry and enabled only if it adds useful local signal with acceptable complexity.
 - Tempo receives traces after the metrics path is working.
 - App-specific OTLP metrics/traces are added only after Kubernetes and node telemetry are stable.
-- Alerting ownership, rule location, routing, and notification targets are documented before alerts are considered complete.
+- Mimir ruler and Alertmanager are the primary alerting path for platform alerts.
+- Alerting ownership, Git-managed rule location, Alertmanager routing, silence strategy, and notification targets are documented before alerts are considered complete.
 - HTTP/1.1 baseline protocol behavior is visible before HTTP/2 changes are introduced.
 - If a mesh HTTP/2 experiment is enabled, telemetry confirms ingress-gateway-to-app-sidecar protocol behavior over Istio mTLS.
 - If h2c is enabled in the app, the app still serves HTTP/1.1 clients unless there is a deliberate reason to remove that compatibility.
