@@ -26,19 +26,46 @@ spec:
                 secretKeyRef:
                   name: minio-root-credentials
                   key: rootPassword
+            - name: MIMIR_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mimir-object-storage-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: MIMIR_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mimir-object-storage-credentials
+                  key: AWS_SECRET_ACCESS_KEY
           command:
             - /bin/sh
             - -ec
             - |
-              until mc alias set local http://minio.minio.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+              until mc --config-dir /tmp/mc alias set local http://minio.minio.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
                 sleep 5
               done
 
-              for bucket in mimir loki tempo pyroscope; do
-                mc mb --ignore-existing "local/${bucket}"
+              for bucket in mimir-blocks mimir-ruler mimir-alertmanager loki tempo pyroscope; do
+                mc --config-dir /tmp/mc mb --ignore-existing "local/${bucket}"
               done
+
+              mc --config-dir /tmp/mc admin policy create local mimir-bucket-access /etc/minio-policies/mimir.json
+              mc --config-dir /tmp/mc admin user add local "$MIMIR_ACCESS_KEY" "$MIMIR_SECRET_KEY"
+              mc --config-dir /tmp/mc admin policy attach local mimir-bucket-access --user "$MIMIR_ACCESS_KEY"
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
+          volumeMounts:
+            - name: policies
+              mountPath: /etc/minio-policies
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: policies
+          configMap:
+            name: observability-object-storage-policies
+        - name: tmp
+          emptyDir: {}

@@ -102,10 +102,12 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided the observability track should use a robust Grafana stack rather than Prometheus as the primary collector. The preferred local kind stack is Grafana Alloy for collection, Mimir for metrics, Loki for logs, Tempo for traces, Pyroscope for profiling, Beyla for eBPF-derived telemetry, and MinIO as kind-local object storage backing services that would use real object storage in cloud clusters.
 - Decided observability foundations should be ordered before application workloads in Argo sync waves. The current live cluster is adding observability after the app because the app already exists, but a scratch rebuild should bring MinIO, Mimir, Alloy, Grafana, and core collectors online before app wave `70`.
 - Started the object-storage foundation by adding an Argo-managed MinIO wrapper chart at `platform/minio`, using the official MinIO chart in kind-friendly standalone mode with a local bootstrap-created root credential Secret. MinIO is generic platform object storage; observability is the first expected consumer but not part of MinIO's component identity.
-- Added desired-state observability bucket bootstrap config under `platform/observability/object-storage-config`. It is a separate wave `20` component that creates the `mimir`, `loki`, `tempo`, and `pyroscope` buckets in MinIO without making those buckets part of the generic MinIO chart values.
+- Added desired-state observability bucket bootstrap config under `platform/observability/object-storage-config`. It is a separate wave `20` component that creates the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets in MinIO without making those buckets part of the generic MinIO chart values.
 - Decided to start Mimir with an explicit single tenant, `k8s-playground`, so Alloy writes and Grafana queries model Mimir's real `X-Scope-OrgID` tenancy without creating unnecessary team/app tenant complexity.
 - Decided the first Mimir deployment may use single-binary mode for kind. This keeps the local metrics backend understandable while still using Mimir's real write, ingest, query, ruler, and object-storage concepts. Revisit a split microservices-style Mimir deployment later after the metrics path is working.
+- Added desired-state Mimir single-binary manifests under `platform/observability/mimir`, using `grafana/mimir:3.1.2`, local PVC working storage, separate MinIO buckets for blocks, ruler, and Alertmanager storage, and dedicated local bootstrap-created `mimir-object-storage-credentials`. The observability object-storage config creates a MinIO user and policy scoped to those three Mimir buckets instead of giving Mimir MinIO root credentials.
 - Decided alerting should use Mimir ruler plus Alertmanager as the primary learning and production-aligned path, not Grafana Alerting as the default. Grafana remains the visualization UI and can display alert state, but Alertmanager concepts are the priority for platform-team readiness.
+- Decided on a functional observability namespace split: backend/UI components such as Mimir, Loki, Tempo, Pyroscope, Grafana, and Alertmanager-related resources live in `observability`; privileged node-level collectors such as Alloy log/node agents and Beyla live in `observability-collectors`; generic MinIO object storage remains in `minio`.
 
 Current local cluster tasks:
 
@@ -475,6 +477,16 @@ Collection model:
 - Collect Kubernetes and node metrics before app-specific telemetry.
 - Accept scrape compatibility where Kubernetes, Istio, Envoy, kubelet, or exporter ecosystems still require it. Avoid app-owned `/metrics` scraping as the default application pattern, but do not make zero scraping a hard requirement.
 
+Namespace model:
+
+- Use `observability` for backend and UI workloads: Mimir, Loki, Tempo, Pyroscope, Grafana, and Alertmanager/ruler resources.
+- Use `observability-collectors` for node-level or otherwise privileged collectors such as Alloy log/node agents, Beyla, and future host/eBPF collectors.
+- Keep MinIO in `minio` because it is generic platform object storage rather than an observability-only component.
+- Give each component its own ServiceAccount, Secrets, Services, PVCs, and Argo application even when components share a namespace.
+- Keep the `observability` namespace suitable for restricted backend/UI workloads. Do not weaken its Pod Security posture merely to accommodate host mounts, eBPF access, Linux capabilities, `hostPID`, or broad collector RBAC.
+- Revisit separate namespaces for Mimir, Loki, Tempo, Grafana, or other backends when independent ownership, ResourceQuotas, Pod Security levels, NetworkPolicy boundaries, secret policies, lifecycle management, or chargeback justify the extra operational cost.
+- Reevaluate the namespace model when moving observability to a dedicated cluster or splitting Mimir into a production-style distributed deployment.
+
 Mimir tenancy model:
 
 - Use one explicit initial tenant: `k8s-playground`.
@@ -719,9 +731,11 @@ k8s-playground-argocd-apps/
 - [ ] Prepare Argo-managed observability wiring and wrapper charts for the Grafana stack, using waves below app wave `70` for foundational storage, backends, collectors, and Grafana.
 - [x] Add local bootstrap support for MinIO root credentials that cannot be committed to Git.
 - [x] Install kind-local MinIO as generic platform object storage for observability and future platform consumers.
-- [x] Add Argo-managed observability object-storage config for the `mimir`, `loki`, `tempo`, and `pyroscope` buckets.
+- [x] Add Argo-managed observability object-storage config for the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets.
+- [x] Add desired-state Mimir single-binary manifests and Argo wiring for wave `25`.
 - [ ] Install Mimir through Argo CD for metrics storage, starting with single-binary mode and explicit tenant `k8s-playground`.
-- [ ] Install Alloy for Kubernetes and node metrics collection before app-specific telemetry.
+- [ ] Create `observability-collectors` for privileged node/log/eBPF collectors while keeping backends and UI workloads in `observability`.
+- [ ] Install Alloy for Kubernetes and node metrics collection in `observability-collectors` before app-specific telemetry.
 - [ ] Configure Alloy to remote-write metrics to Mimir with tenant `k8s-playground`.
 - [ ] Install Grafana through Argo CD with declarative datasources and dashboards.
 - [ ] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
@@ -773,6 +787,7 @@ k8s-playground-argocd-apps/
 - Mimir uses explicit tenant `k8s-playground` for the initial local playground metrics path.
 - Mimir starts in single-binary mode for kind while still using MinIO object storage.
 - Mimir receives Kubernetes and node metrics collected through Alloy for tenant `k8s-playground`.
+- Backend/UI workloads remain in `observability`, privileged node/eBPF collectors run in `observability-collectors`, and generic object storage remains in `minio`.
 - On a scratch rebuild, Mimir and Alloy are healthy before application wave `70` syncs workloads.
 - Grafana is reachable through a MetalLB external IP and requires authentication.
 - Grafana datasources are provisioned declaratively for installed backends.

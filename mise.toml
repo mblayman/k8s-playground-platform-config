@@ -26,6 +26,24 @@ helm template minio platform/minio \
 description = "Render observability object storage bucket config"
 run = "kubectl kustomize platform/observability/object-storage-config >/dev/null"
 
+[tasks."validate:mimir"]
+description = "Render and validate the Mimir single-binary manifests"
+run = '''
+kubectl kustomize platform/observability/mimir >/tmp/opencode/mimir-rendered.yaml
+ruby -ryaml -e 'docs = YAML.load_stream(File.read("/tmp/opencode/mimir-rendered.yaml")); cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "mimir-config" }; File.write("/tmp/opencode/mimir.yaml", cm.fetch("data").fetch("mimir.yaml")); File.write("/tmp/opencode/runtime.yaml", cm.fetch("data").fetch("runtime.yaml"))'
+docker run --rm \
+  -v /tmp/opencode/mimir.yaml:/etc/mimir/mimir.yaml:ro \
+  -v /tmp/opencode/runtime.yaml:/etc/mimir/runtime.yaml:ro \
+  -e AWS_ACCESS_KEY_ID=test \
+  -e AWS_SECRET_ACCESS_KEY=test \
+  grafana/mimir:3.1.2 \
+  -target=all \
+  -config.file=/etc/mimir/mimir.yaml \
+  -config.expand-env=true \
+  -print.config \
+  >/dev/null
+'''
+
 [tasks."validate:cert-manager"]
 description = "Render the cert-manager wrapper Helm chart"
 run = '''
@@ -87,6 +105,7 @@ mise run validate:argocd-kind-bootstrap
 mise run validate:argocd-repositories
 mise run validate:minio
 mise run validate:observability-object-storage-config
+mise run validate:mimir
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
@@ -112,6 +131,7 @@ mise run kind:create --name {{ usage.name }} --config {{ usage.config }}
 mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_version }} --network {{ usage.network }} --namespace {{ usage.metallb_namespace }} --pool-name {{ usage.metallb_pool_name }}
 mise run argocd:install --name {{ usage.name }}
 mise run minio:bootstrap-secrets --name {{ usage.name }}
+mise run mimir:bootstrap-secrets --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
 mise run gateway:wait --name {{ usage.name }}
@@ -152,6 +172,44 @@ kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} create secret g
   --from-literal=rootUser='{{ usage.minio_root_user }}' \
   --from-literal=rootPassword="$password" \
   --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+'''
+
+[tasks."mimir:bootstrap-secrets"]
+description = "Create dedicated local-only Mimir object storage credentials before Argo sync"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--minio-namespace <minio-namespace>" help="MinIO namespace" default="minio"
+flag "--mimir-namespace <mimir-namespace>" help="Mimir namespace" default="observability"
+flag "--mimir-secret <mimir-secret>" help="Mimir object storage credentials Secret name" default="mimir-object-storage-credentials"
+flag "--mimir-access-key <mimir-access-key>" help="MinIO access key for the Mimir user" default="mimir"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.minio_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.mimir_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+
+access_key='{{ usage.mimir_access_key }}'
+secret_key=""
+
+for namespace in {{ usage.mimir_namespace }} {{ usage.minio_namespace }}; do
+  if kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.mimir_secret }} >/dev/null 2>&1; then
+    existing_access_key="$(kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.mimir_secret }} -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)"
+    if [ "$existing_access_key" = "$access_key" ]; then
+      secret_key="$(kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.mimir_secret }} -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)"
+      break
+    fi
+  fi
+done
+
+if [ -z "$secret_key" ]; then
+  secret_key="$(openssl rand -base64 32)"
+fi
+
+for namespace in {{ usage.minio_namespace }} {{ usage.mimir_namespace }}; do
+  kubectl --context kind-{{ usage.name }} -n "$namespace" create secret generic {{ usage.mimir_secret }} \
+    --from-literal=AWS_ACCESS_KEY_ID="$access_key" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="$secret_key" \
+    --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+done
 '''
 
 [tasks."app:status"]
@@ -340,7 +398,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''

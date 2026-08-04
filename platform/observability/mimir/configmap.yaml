@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-config
+data:
+  mimir.yaml: |
+    usage_stats:
+      enabled: false
+
+    multitenancy_enabled: true
+
+    activity_tracker:
+      filepath: /data/activity.log
+
+    server:
+      http_listen_port: 8080
+      grpc_listen_port: 9095
+
+    blocks_storage:
+      backend: s3
+      bucket_store:
+        sync_dir: /data/tsdb-sync
+      s3:
+        endpoint: minio.minio.svc.cluster.local:9000
+        bucket_name: mimir-blocks
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: true
+      tsdb:
+        dir: /data/tsdb
+
+    compactor:
+      data_dir: /data/compactor
+
+    ingester:
+      ring:
+        replication_factor: 1
+
+    alertmanager:
+      data_dir: /data/alertmanager
+      enable_api: true
+      external_url: /alertmanager
+
+    alertmanager_storage:
+      backend: s3
+      s3:
+        endpoint: minio.minio.svc.cluster.local:9000
+        bucket_name: mimir-alertmanager
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: true
+
+    ruler:
+      enable_api: true
+      rule_path: /data/ruler
+      alertmanager_url: http://mimir.observability.svc.cluster.local:8080/alertmanager
+
+    ruler_storage:
+      backend: s3
+      s3:
+        endpoint: minio.minio.svc.cluster.local:9000
+        bucket_name: mimir-ruler
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: true
+
+    runtime_config:
+      file: /etc/mimir/runtime.yaml
+  runtime.yaml: |
+    overrides:
+      k8s-playground: {}
