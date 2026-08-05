@@ -1,0 +1,150 @@
+alloy:
+  crds:
+    create: false
+
+  alloy:
+    configMap:
+      content: |
+        discovery.kubernetes "local_node" {
+          role = "node"
+
+          selectors {
+            role  = "node"
+            field = "metadata.name=" + sys.env("NODE_NAME")
+          }
+        }
+
+        prometheus.remote_write "mimir" {
+          external_labels = {
+            cluster = "k8s-playground",
+          }
+
+          endpoint {
+            url = "http://mimir.observability.svc.cluster.local:8080/api/v1/push"
+
+            headers = {
+              "X-Scope-OrgID" = "k8s-playground",
+            }
+          }
+        }
+
+        prometheus.scrape "kubelet" {
+          targets           = discovery.kubernetes.local_node.targets
+          forward_to        = [prometheus.remote_write.mimir.receiver]
+          job_name          = "kubelet"
+          scheme            = "https"
+          metrics_path      = "/metrics"
+          scrape_interval   = "30s"
+          scrape_timeout    = "10s"
+          bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+          tls_config {
+            ca_file     = "/var/run/kubelet-pki/kubelet.crt"
+            server_name = sys.env("NODE_NAME")
+          }
+        }
+
+        prometheus.scrape "cadvisor" {
+          targets           = discovery.kubernetes.local_node.targets
+          forward_to        = [prometheus.remote_write.mimir.receiver]
+          job_name          = "cadvisor"
+          scheme            = "https"
+          metrics_path      = "/metrics/cadvisor"
+          scrape_interval   = "30s"
+          scrape_timeout    = "10s"
+          bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+          tls_config {
+            ca_file     = "/var/run/kubelet-pki/kubelet.crt"
+            server_name = sys.env("NODE_NAME")
+          }
+        }
+
+    enableReporting: false
+    storagePath: /var/lib/alloy
+    extraEnv:
+      - name: NODE_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: spec.nodeName
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+    mounts:
+      extra:
+        - name: storage
+          mountPath: /var/lib/alloy
+        - name: kubelet-serving-ca
+          mountPath: /var/run/kubelet-pki/kubelet.crt
+          readOnly: true
+
+  configReloader:
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      readOnlyRootFilesystem: true
+
+  controller:
+    type: daemonset
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+    volumes:
+      extra:
+        - name: storage
+          emptyDir: {}
+        - name: kubelet-serving-ca
+          hostPath:
+            path: /var/lib/kubelet/pki/kubelet.crt
+            type: File
+
+  global:
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 473
+      runAsGroup: 473
+      fsGroup: 473
+      seccompProfile:
+        type: RuntimeDefault
+
+  rbac:
+    create: true
+    rules:
+      - apiGroups:
+          - ""
+        resources:
+          - nodes
+        verbs:
+          - get
+          - list
+          - watch
+    clusterRules:
+      - apiGroups:
+          - ""
+        resources:
+          - nodes/metrics
+        verbs:
+          - get
+
+  serviceAccount:
+    create: true
+    automountServiceAccountToken: true
+
+  service:
+    enabled: true
+    type: ClusterIP
+
+  serviceMonitor:
+    enabled: false

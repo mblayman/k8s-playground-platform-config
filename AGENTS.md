@@ -22,6 +22,7 @@ Current wrapper chart paths:
 - `platform/istio/cni`
 - `platform/istio/ingressgateway`
 - `platform/minio`
+- `platform/observability/alloy`
 
 Keep wrapper chart `version` aligned with the upstream dependency version to avoid a separate local versioning scheme. For example, Istio wrappers use `version: 1.30.2` when their dependency chart version is `1.30.2`. Cert-manager uses wrapper `version: 1.21.0` while the dependency uses Jetstack's `v1.21.0` chart version.
 

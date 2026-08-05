@@ -44,6 +44,20 @@ docker run --rm \
   >/dev/null
 '''
 
+[tasks."validate:alloy"]
+description = "Render the Alloy wrapper chart and validate its runtime config"
+run = '''
+helm dependency update platform/observability/alloy >/dev/null
+helm template alloy platform/observability/alloy \
+  --namespace observability-collectors \
+  >/tmp/opencode/alloy-rendered.yaml
+ruby -ryaml -e 'docs = YAML.load_stream(File.read("/tmp/opencode/alloy-rendered.yaml")); cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "alloy" }; File.write("/tmp/opencode/config.alloy", cm.fetch("data").fetch("config.alloy"))'
+docker run --rm \
+  -v /tmp/opencode/config.alloy:/etc/alloy/config.alloy:ro \
+  grafana/alloy:v1.18.0 \
+  validate /etc/alloy/config.alloy
+'''
+
 [tasks."validate:cert-manager"]
 description = "Render the cert-manager wrapper Helm chart"
 run = '''
@@ -106,6 +120,7 @@ mise run validate:argocd-repositories
 mise run validate:minio
 mise run validate:observability-object-storage-config
 mise run validate:mimir
+mise run validate:alloy
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
@@ -398,7 +413,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir alloy cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''

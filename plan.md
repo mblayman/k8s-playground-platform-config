@@ -108,6 +108,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added desired-state Mimir single-binary manifests under `platform/observability/mimir`, using `grafana/mimir:3.1.2`, local PVC working storage, separate MinIO buckets for blocks, ruler, and Alertmanager storage, and dedicated local bootstrap-created `mimir-object-storage-credentials`. The observability object-storage config creates a MinIO user and policy scoped to those three Mimir buckets instead of giving Mimir MinIO root credentials.
 - Decided alerting should use Mimir ruler plus Alertmanager as the primary learning and production-aligned path, not Grafana Alerting as the default. Grafana remains the visualization UI and can display alert state, but Alertmanager concepts are the priority for platform-team readiness.
 - Decided on a functional observability namespace split: backend/UI components such as Mimir, Loki, Tempo, Pyroscope, Grafana, and Alertmanager-related resources live in `observability`; privileged node-level collectors such as Alloy log/node agents and Beyla live in `observability-collectors`; generic MinIO object storage remains in `minio`.
+- Added desired-state Grafana Alloy wrapper chart and Argo wiring under `platform/observability/alloy` at wave `30`. Alloy and Istio base share the wave because they are independent branches that both depend on earlier foundations; Alloy does not depend on Istio. The first DaemonSet configuration discovers only its local node, scrapes authenticated kubelet and cAdvisor metrics every 30 seconds, and remote-writes to Mimir tenant `k8s-playground` with a `cluster=k8s-playground` external label.
 
 Current local cluster tasks:
 
@@ -476,6 +477,9 @@ Collection model:
 - Collect logs from Kubernetes container stdout/stderr directly with Alloy, using file-based or Kubernetes log collection paths.
 - Collect Kubernetes and node metrics before app-specific telemetry.
 - Accept scrape compatibility where Kubernetes, Istio, Envoy, kubelet, or exporter ecosystems still require it. Avoid app-owned `/metrics` scraping as the default application pattern, but do not make zero scraping a hard requirement.
+- Start Alloy with kubelet `/metrics` and `/metrics/cadvisor` collection. Mount only the node's public kubelet certificate chain read-only for verified direct HTTPS on kind; defer broader host filesystem mounts, Unix/node exporter collection, log mounts, and eBPF capabilities until the privileged collector phase is designed explicitly. The kubelet certificate path and trust model are kind-specific implementation details; a deployment on GKE or another platform must replace this mount with provider-specific, verified kubelet TLS configuration rather than assume the same host path or certificate authority.
+- Run Alloy as one DaemonSet pod per node, including the kind control-plane node, and limit each pod's Kubernetes discovery to its own node to prevent duplicate samples and unnecessary API-server load.
+- Grant Alloy only node discovery and `nodes/metrics` RBAC in this first slice; add permissions later only when a concrete collector requires them.
 
 Namespace model:
 
@@ -622,8 +626,8 @@ Current wave structure:
 | `10` | Core platform foundations that do not depend on Istio, such as cert-manager and kind-local object storage with MinIO. |
 | `20` | Configuration consumed by core foundations, such as cert-manager issuers/certificates and MinIO buckets or backend object-storage credentials. |
 | `25` | Core observability metrics storage that should exist before workloads, starting with Mimir. |
-| `30` | Istio base APIs, CRDs, and validating webhook bootstrap. |
-| `35` | Core observability collection, UI, and datasource wiring, especially Alloy Kubernetes/node metrics collection and Grafana backed by Mimir. |
+| `30` | Platform API foundations and telemetry agents that depend on earlier storage backends, currently Istio base APIs and Alloy Kubernetes/node metrics collection. |
+| `35` | Observability UI and datasource wiring, especially Grafana backed by Mimir. |
 | `40` | Istio control plane runtime, currently `istiod` with revision `stable`. |
 | `45` | Istio CNI node agent, installed after `istiod` and before meshed workloads. |
 | `50` | Istio ingress gateway or other mesh data-plane gateway components. |
@@ -733,9 +737,10 @@ k8s-playground-argocd-apps/
 - [x] Install kind-local MinIO as generic platform object storage for observability and future platform consumers.
 - [x] Add Argo-managed observability object-storage config for the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets.
 - [x] Add desired-state Mimir single-binary manifests and Argo wiring for wave `25`.
-- [ ] Install Mimir through Argo CD for metrics storage, starting with single-binary mode and explicit tenant `k8s-playground`.
+- [x] Install Mimir through Argo CD for metrics storage, starting with single-binary mode and explicit tenant `k8s-playground`.
 - [ ] Create `observability-collectors` for privileged node/log/eBPF collectors while keeping backends and UI workloads in `observability`.
-- [ ] Install Alloy for Kubernetes and node metrics collection in `observability-collectors` before app-specific telemetry.
+- [x] Add desired-state Alloy wrapper chart and Argo wiring for wave `30`, parallel with Istio base rather than dependent on it.
+- [ ] Install Alloy in `observability-collectors` for node-local kubelet and cAdvisor metrics before app-specific telemetry.
 - [ ] Configure Alloy to remote-write metrics to Mimir with tenant `k8s-playground`.
 - [ ] Install Grafana through Argo CD with declarative datasources and dashboards.
 - [ ] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
@@ -788,6 +793,9 @@ k8s-playground-argocd-apps/
 - Mimir starts in single-binary mode for kind while still using MinIO object storage.
 - Mimir receives Kubernetes and node metrics collected through Alloy for tenant `k8s-playground`.
 - Backend/UI workloads remain in `observability`, privileged node/eBPF collectors run in `observability-collectors`, and generic object storage remains in `minio`.
+- Alloy runs one ready DaemonSet pod on each kind node and each pod discovers only its own node.
+- Alloy can scrape its local kubelet and cAdvisor endpoints without TLS-validation, authentication, RBAC, or duplicate-series errors.
+- Mimir queries for tenant `k8s-playground` return healthy `up` series for `job="kubelet"` and `job="cadvisor"` from all three nodes.
 - On a scratch rebuild, Mimir and Alloy are healthy before application wave `70` syncs workloads.
 - Grafana is reachable through a MetalLB external IP and requires authentication.
 - Grafana datasources are provisioned declaratively for installed backends.
