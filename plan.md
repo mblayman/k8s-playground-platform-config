@@ -119,6 +119,7 @@ mise run kind:create
 mise run kind:delete
 mise run kind:nodes
 mise run kind:status
+mise run kind:repair-mesh
 ```
 
 Current local MetalLB tasks:
@@ -782,6 +783,7 @@ k8s-playground-argocd-apps/
 - Gateway API CRDs are established.
 - `GatewayClass/istio`, `Gateway/k8s-playground-gateway`, and `HTTPRoute/k8s-playground-service` are accepted.
 - `mise run gateway:smoke-test` verifies the app through the Istio ingress gateway path.
+- `mise run kind:repair-mesh` detects expired or near-expiry Istio workload certificates after long kind host suspends, recycles only affected controller-managed pods, waits for recovery, and reruns the gateway smoke test.
 - App pods receive sidecars through revision-based injection.
 - App-to-app traffic uses mTLS.
 - Plaintext traffic to strict-mTLS workloads is rejected.
