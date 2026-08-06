@@ -1,0 +1,131 @@
+grafana:
+  replicas: 1
+
+  deploymentStrategy:
+    type: Recreate
+
+  rbac:
+    create: false
+
+  serviceAccount:
+    create: true
+    name: grafana
+    automountServiceAccountToken: false
+
+  automountServiceAccountToken: false
+
+  testFramework:
+    enabled: false
+
+  admin:
+    existingSecret: grafana-admin-credentials
+    userKey: admin-user
+    passwordKey: admin-password
+
+  service:
+    type: LoadBalancer
+    port: 80
+    targetPort: 3000
+    appProtocol: http
+
+  persistence:
+    enabled: true
+    type: pvc
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 472
+    runAsGroup: 472
+    fsGroup: 472
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    privileged: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      deleteDatasources:
+        - name: Mimir
+          orgId: 1
+      datasources:
+        - name: Mimir
+          uid: mimir
+          type: prometheus
+          access: proxy
+          url: http://mimir.observability.svc.cluster.local:8080/prometheus
+          isDefault: true
+          editable: false
+          jsonData:
+            httpMethod: POST
+            prometheusType: Mimir
+            timeInterval: 30s
+            manageAlerts: false
+            httpHeaderName1: X-Scope-OrgID
+          secureJsonData:
+            httpHeaderValue1: k8s-playground
+
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: platform
+          orgId: 1
+          folder: Platform
+          folderUid: platform
+          type: file
+          disableDeletion: false
+          editable: false
+          options:
+            path: /var/lib/grafana/dashboards/platform
+
+  dashboardsConfigMaps:
+    platform: grafana-platform-dashboards
+
+  grafana.ini:
+    analytics:
+      check_for_updates: false
+      check_for_plugin_updates: false
+      reporting_enabled: false
+    auth.anonymous:
+      enabled: false
+    auth.basic:
+      enabled: true
+    users:
+      allow_sign_up: false
+      allow_org_create: false
+      auto_assign_org: true
+      auto_assign_org_role: Viewer
+    security:
+      disable_gravatar: true
+      cookie_samesite: strict
+    log:
+      mode: console
+
+  assertNoLeakedSecrets: true
+
+  serviceMonitor:
+    enabled: false
+
+  ingress:
+    enabled: false
+
+  networkPolicy:
+    enabled: false

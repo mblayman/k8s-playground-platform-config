@@ -66,6 +66,20 @@ docker run --rm \
   validate /etc/alloy/config.alloy
 '''
 
+[tasks."validate:grafana"]
+description = "Render the Grafana wrapper chart and validate its provisioning"
+run = '''
+for dashboard in platform/observability/grafana/dashboards/*.json; do
+  jq empty "$dashboard"
+done
+helm dependency update platform/observability/grafana >/dev/null
+helm lint platform/observability/grafana >/dev/null
+helm template grafana platform/observability/grafana \
+  --namespace observability \
+  >/tmp/opencode/grafana-rendered.yaml
+ruby -ryaml -rjson -e 'docs = YAML.load_stream(File.read("/tmp/opencode/grafana-rendered.yaml")); service = docs.find { |doc| doc&.dig("kind") == "Service" && doc.dig("metadata", "name") == "grafana" }; abort "Grafana Service is not a LoadBalancer" unless service&.dig("spec", "type") == "LoadBalancer"; config = docs.select { |doc| doc&.dig("kind") == "ConfigMap" }.flat_map { |doc| doc.fetch("data", {}).values }.join("\n"); abort "Mimir datasource tenant header is missing" unless config.include?("X-Scope-OrgID") && config.include?("k8s-playground"); dashboards = docs.find { |doc| doc&.dig("kind") == "ConfigMap" && doc.dig("metadata", "name") == "grafana-platform-dashboards" }; abort "Grafana dashboards are missing" unless dashboards&.fetch("data", {})&.length == 2; dashboards.fetch("data").each_value { |json| JSON.parse(json) }'
+'''
+
 [tasks."validate:cert-manager"]
 description = "Render the cert-manager wrapper Helm chart"
 run = '''
@@ -130,6 +144,7 @@ mise run validate:minio
 mise run validate:observability-object-storage-config
 mise run validate:mimir
 mise run validate:alloy
+mise run validate:grafana
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
@@ -156,6 +171,7 @@ mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_ve
 mise run argocd:install --name {{ usage.name }}
 mise run minio:bootstrap-secrets --name {{ usage.name }}
 mise run mimir:bootstrap-secrets --name {{ usage.name }}
+mise run grafana:bootstrap-secrets --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
 mise run gateway:wait --name {{ usage.name }}
@@ -234,6 +250,52 @@ for namespace in {{ usage.minio_namespace }} {{ usage.mimir_namespace }}; do
     --from-literal=AWS_SECRET_ACCESS_KEY="$secret_key" \
     --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
 done
+'''
+
+[tasks."grafana:bootstrap-secrets"]
+description = "Create local-only Grafana administrator credentials before Argo sync"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Grafana namespace" default="observability"
+flag "--secret <secret>" help="Grafana administrator Secret name" default="grafana-admin-credentials"
+flag "--admin-user <admin-user>" help="Grafana administrator username" default="admin"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+
+if kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get secret {{ usage.secret }} >/dev/null 2>&1; then
+  printf 'Secret %s/%s already exists; leaving it unchanged\n' '{{ usage.namespace }}' '{{ usage.secret }}'
+  exit 0
+fi
+
+password="$(openssl rand -base64 32)"
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} create secret generic {{ usage.secret }} \
+  --from-literal=admin-user='{{ usage.admin_user }}' \
+  --from-literal=admin-password="$password" \
+  --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+'''
+
+[tasks."grafana:admin-password"]
+description = "Print the local Grafana administrator username and password"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Grafana namespace" default="observability"
+flag "--secret <secret>" help="Grafana administrator Secret name" default="grafana-admin-credentials"
+'''
+run = '''
+user="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get secret {{ usage.secret }} -o jsonpath='{.data.admin-user}' | base64 -d)"
+password="$(kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get secret {{ usage.secret }} -o jsonpath='{.data.admin-password}' | base64 -d)"
+printf 'Username: %s\nPassword: %s\n' "$user" "$password"
+'''
+
+[tasks."grafana:status"]
+description = "Show Grafana workload and LoadBalancer status"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--namespace <namespace>" help="Grafana namespace" default="observability"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get deployment,pods,service,persistentvolumeclaim -l app.kubernetes.io/name=grafana -o wide
 '''
 
 [tasks."app:status"]
@@ -422,7 +484,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir alloy cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir alloy grafana cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''

@@ -165,6 +165,14 @@ mise run gateway:smoke-test
 mise run gateway:status
 ```
 
+Current local Grafana tasks:
+
+```sh
+mise run grafana:bootstrap-secrets
+mise run grafana:admin-password
+mise run grafana:status
+```
+
 The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
 
 ```sh
@@ -518,6 +526,8 @@ Recommended sequence:
 - Install Grafana with declarative datasources and dashboards.
 - Expose Grafana through a `Service` of type `LoadBalancer` using MetalLB, not port-forwarding.
 - Configure Grafana authentication from the start. For local kind, generate or inject credentials as a Kubernetes Secret outside plaintext Git; evaluate SSO/OIDC later for cloud clusters.
+- Start the single-replica kind deployment with Grafana's SQLite database on a PVC, then migrate Grafana metadata to PostgreSQL before enabling multiple replicas or treating the deployment as highly available. Use a dedicated database and database user rather than sharing an application schema.
+- Add Keycloak in a later identity-focused phase as a local OAuth 2.0/OIDC provider, then migrate Grafana human login from local accounts to generic OAuth/OIDC with explicit group or claim-to-role mapping. Keep a controlled local administrator account for break-glass access.
 - Install Loki and configure Alloy to read Kubernetes stdout/stderr directly.
 - Install Pyroscope for profiling data.
 - Evaluate Beyla for eBPF-derived service telemetry and profiling-adjacent signals without requiring immediate app code changes.
@@ -739,13 +749,15 @@ k8s-playground-argocd-apps/
 - [x] Add Argo-managed observability object-storage config for the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets.
 - [x] Add desired-state Mimir single-binary manifests and Argo wiring for wave `25`.
 - [x] Install Mimir through Argo CD for metrics storage, starting with single-binary mode and explicit tenant `k8s-playground`.
-- [ ] Create `observability-collectors` for privileged node/log/eBPF collectors while keeping backends and UI workloads in `observability`.
+- [x] Create `observability-collectors` for privileged node/log/eBPF collectors while keeping backends and UI workloads in `observability`.
 - [x] Add desired-state Alloy wrapper chart and Argo wiring for wave `30`, parallel with Istio base rather than dependent on it.
-- [ ] Install Alloy in `observability-collectors` for node-local kubelet and cAdvisor metrics before app-specific telemetry.
-- [ ] Configure Alloy to remote-write metrics to Mimir with tenant `k8s-playground`.
+- [x] Install Alloy in `observability-collectors` for node-local kubelet and cAdvisor metrics before app-specific telemetry.
+- [x] Configure Alloy to remote-write metrics to Mimir with tenant `k8s-playground`.
 - [ ] Install Grafana through Argo CD with declarative datasources and dashboards.
 - [ ] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
 - [ ] Expose Grafana through a MetalLB-backed `LoadBalancer` Service and configure authentication without committing plaintext credentials.
+- [ ] Migrate Grafana from SQLite on a local PVC to PostgreSQL before adding replicas or claiming production-style high availability.
+- [ ] Install Keycloak in a later identity-learning phase and integrate Grafana through generic OAuth/OIDC with explicit role mapping and a tested break-glass login path.
 - [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
 - [ ] Install Pyroscope for profiling.
 - [ ] Evaluate and, if useful, install Beyla for eBPF-derived telemetry.
