@@ -72,6 +72,24 @@ run = '''
 for dashboard in platform/observability/grafana/dashboards/*.json; do
   jq empty "$dashboard"
 done
+ruby -rjson -e '
+  allowed = %w[fixed shades thresholds palette-classic palette-classic-by-name continuous-GrYlRd continuous-RdYlGr continuous-BlYlRd continuous-YlRd continuous-BlPu continuous-YlBl continuous-blues continuous-reds continuous-greens continuous-purples]
+  ARGV.each do |path|
+    stack = [JSON.parse(File.read(path))]
+    until stack.empty?
+      value = stack.pop
+      if value.is_a?(Hash)
+        color = value["color"]
+        if color.is_a?(Hash) && color["mode"] && !allowed.include?(color["mode"])
+          abort "#{path}: unsupported Grafana color mode #{color["mode"].inspect}"
+        end
+        stack.concat(value.values)
+      elsif value.is_a?(Array)
+        stack.concat(value)
+      end
+    end
+  end
+' platform/observability/grafana/dashboards/*.json
 helm dependency update platform/observability/grafana >/dev/null
 helm lint platform/observability/grafana >/dev/null
 helm template grafana platform/observability/grafana \

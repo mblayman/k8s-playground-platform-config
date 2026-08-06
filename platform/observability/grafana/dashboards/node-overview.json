@@ -144,7 +144,7 @@
         "defaults": {
           "color": {
             "fixedColor": "blue",
-            "mode": "fixed-color"
+            "mode": "fixed"
           },
           "decimals": 0,
           "mappings": [],
@@ -204,7 +204,7 @@
         "defaults": {
           "color": {
             "fixedColor": "purple",
-            "mode": "fixed-color"
+            "mode": "fixed"
           },
           "decimals": 0,
           "mappings": [],
