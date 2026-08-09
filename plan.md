@@ -58,7 +58,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Refactored `argocd:install` so Argo CD manifests are applied first, then independent component rollout checks run in parallel.
 - Added `scripts/wait-for-rollout.sh` so rollout waits poll frequently while printing periodic workload and pod status, then wired Argo CD waits and MetalLB controller/speaker waits through it. MetalLB now waits for the controller before the speaker because the speaker depends on controller-created startup state such as the `memberlist` Secret.
 - Populated `../k8s-playground-argocd-apps` with the initial `clusters/kind` root app-of-apps structure and the first child `Application` for `k8s-playground-service`.
-- Added `mise run argocd:bootstrap-root` to apply the pushed kind root app manifest from GitHub and wait for expected child apps to become synced and healthy:
+- Added `mise run argocd:bootstrap-roots` to apply the pushed kind root manifests from GitHub and wait for expected child apps to become synced and healthy:
   - `gateway-api-crds`
   - `cert-manager`
   - `cert-manager-config`
@@ -147,7 +147,7 @@ Current local Argo CD tasks:
 
 ```sh
 mise run argocd:install
-mise run argocd:bootstrap-root
+mise run argocd:bootstrap-roots
 mise run argocd:sync-app
 mise run argocd:status
 mise run argocd:admin-password
@@ -577,7 +577,8 @@ Ownership rules:
 - Preserve existing Application names, Helm release names, namespaces, PVCs, and tracking ownership during the wiring migration to avoid workload recreation.
 - Preserve Argo's default child `Application` health behavior. Parent Applications declare desired child Applications; each child reconciles its own resources independently and reports its own sync/health state.
 - Treat waves on child `Application` manifests as coarse creation order, not as a readiness DAG. Keep true resource dependencies within one Application when health-gated resource waves are required.
-- Give automated child Applications explicit bounded retry/backoff policies where an earlier dependency may not yet be ready, and make hooks/controllers idempotent so repeated reconciliation is safe.
+- Rely on Argo's automated-sync default of five retries with `5s`, `10s`, `20s`, `40s`, and `80s` delays. Add an explicit retry override only for a specific Application when observed behavior proves the default insufficient.
+- Do not describe Argo sync retries as infinite eventual consistency. After the default retries fail, Argo does not retry the same revision automatically; the failure remains visible until a new revision or explicit sync. Make hooks/controllers idempotent and keep runtime dependencies non-blocking so most temporary unavailability does not become an apply failure.
 - Keep sync-wave contracts local to each Application. Waves in separate roots do not globally interleave and must not create a hidden runtime dependency between application and observability environments.
 - Design observability child destinations so changing the observability cluster later does not require moving Alloy, MinIO, Istio, or application wiring.
 
@@ -595,7 +596,7 @@ steady-state runtime contract
   Alloy retries/buffers bounded exports across the boundary
 ```
 
-Implement the fresh-cluster behavior in `cluster:create`/Argo tasks by applying all three roots, allowing their child Applications to reconcile independently, and waiting for every child to become `Synced` and `Healthy` before generating traffic. Do not attempt to express cross-root or cross-child readiness ordering with parent waves. Use resource-level waves inside a child Application only when resources share a real lifecycle dependency, and rely on retries/readiness for dependencies between Applications.
+Implement the fresh-cluster behavior in `cluster:create`/Argo tasks by applying all three roots, allowing their child Applications to reconcile independently, and waiting for every child to become `Synced` and `Healthy` before generating traffic. Do not attempt to express cross-root or cross-child readiness ordering with parent waves. Use resource-level waves inside a child Application when resources share a real lifecycle dependency; otherwise rely on Kubernetes controller reconciliation, readiness, and Argo's existing bounded retry behavior.
 
 Mimir tenancy model:
 
@@ -757,7 +758,7 @@ Guardrails:
 - During fresh kind cluster creation, apply all three roots independently and wait for all of them before generating deliberate validation traffic.
 - Do not block application root reconciliation, application availability, or deployment on the health of the independently reconciled observability root.
 - Within the application root, create the meshed Alloy Application before application wave `70`, without making application availability depend on collector readiness; application exporters must remain non-blocking when telemetry is unavailable.
-- Give child Applications bounded automated sync retries with observable failure after exhaustion instead of relying on parent health propagation.
+- Do not duplicate Argo's default retry policy in every child manifest. Keep exhausted sync failures visible and add a targeted retry override only when a concrete dependency needs different behavior.
 - Keep app-specific dashboards and alert rules after application wave `70` when they depend on labels, routes, or service names from app components.
 - Prefer resource-level sync waves inside an app component before splitting app-owned resources into separate child apps.
 - Avoid adding new sync wave numbers unless the dependency cannot fit an existing band.
@@ -818,8 +819,8 @@ Argo CD application definitions live in a separate repo named `k8s-playground-ar
 k8s-playground-argocd-apps/
   clusters/
     kind/
-      application.yaml                  # existing shared/substrate root
-      application-cluster.yaml          # application-cluster root
+      shared.yaml                       # existing shared/substrate root
+      application.yaml                  # application-cluster root
       observability.yaml                # observability root
       apps/
         argocd-config.yaml
@@ -829,6 +830,7 @@ k8s-playground-argocd-apps/
         gateway-api-crds.yaml
         minio.yaml
         observability-object-storage-config.yaml
+        observability-project.yaml
       application/
         apps/
           gateway-api-config.yaml
@@ -838,7 +840,6 @@ k8s-playground-argocd-apps/
           istio-ingressgateway.yaml
           istio-managementgateway.yaml
           alloy.yaml
-          gateway-api-config.yaml
           management-gateway-config.yaml
           k8s-playground-service.yaml
       observability/
@@ -898,7 +899,6 @@ k8s-playground-argocd-apps/
 - [x] Validate safe `/etc/hosts` check and sync against live Gateway IPs, with automated stale-IP replacement, conflict detection, and managed-block removal tests.
 - [x] Return Argo CD and Grafana Services to `ClusterIP` after their management-gateway routes are healthy, then remove the temporary direct Argo CD LoadBalancer bootstrap customization.
 - [x] Document the one-physical-cluster/three-logical-zone model: application cluster, observability cluster stand-in, and shared platform/substrate with generic MinIO object storage.
-- [ ] Standardize bounded automated sync retry/backoff on child Applications and validate that temporarily unavailable CRDs, webhooks, or backend Services converge without parent health customization or manual sync.
 - [ ] Split the current kind app-of-apps into the existing shared/substrate root plus independent `k8s-playground-kind-observability-root` and `k8s-playground-kind-application-root` Applications.
 - [ ] Add a restricted `observability` Argo `AppProject`; move only Mimir and Grafana wiring into the observability root while preserving their Application names, tracking, namespaces, and live resources.
 - [ ] Move Istio, gateway configuration, Alloy, and `k8s-playground-service` wiring into the application root while preserving existing Application and Helm release identities.
@@ -943,7 +943,7 @@ k8s-playground-argocd-apps/
 - Argo CD CRDs are registered: `Application`, `ApplicationSet`, and `AppProject`.
 - MetalLB remains managed by local kind bootstrap tasks, and Argo-managed apps can still use MetalLB-assigned LoadBalancer IPs.
 - Argo CD can manage the tracer app without breaking external reachability.
-- `mise run argocd:bootstrap-root` waits for every expected Argo child app to become `Synced` and `Healthy`.
+- `mise run argocd:bootstrap-roots` applies all three independently reconciled roots and waits for every expected child app to become `Synced` and `Healthy` before validation traffic.
 - cert-manager can issue a local certificate.
 - No plaintext sensitive Kubernetes Secret manifests are committed.
 - Istio control plane is healthy.
@@ -968,7 +968,7 @@ k8s-playground-argocd-apps/
 - MinIO exposes a verified HTTPS S3 endpoint as generic shared substrate, and its observability consumers continue to use bucket-scoped credentials rather than root credentials.
 - The existing kind root owns only shared substrate, while independent application and observability roots own their respective movable components.
 - Each Argo root uses default app-of-apps behavior: child Applications reconcile independently, expose their own sync/health state, and eventually converge without parent health customization.
-- Child Applications recover automatically from deliberately introduced temporary dependency failures using bounded retry/backoff, while exhausted retries remain visible and actionable.
+- Child Applications use Argo's default five automated-sync retries; exhausted failures remain visible and actionable, and any non-default retry policy has a documented component-specific reason.
 - Fresh kind cluster creation reconciles all three roots independently and waits for all of them before generating validation traffic; steady-state reconciliation has no cross-root health dependency.
 - The `observability` AppProject restricts central backend applications to the intended source repository and `observability` destination namespace.
 - Migrating Mimir and Grafana wiring into the observability root does not recreate their Deployments, Services, Secrets, or PVCs.
@@ -1072,7 +1072,7 @@ Later app resources after Istio is introduced:
 - Treat MinIO as generic kind-local platform object storage, not as part of the observability stack or logical observability cluster; use provider object storage for future cloud environments.
 - Model an application cluster, an observability cluster stand-in, and shared platform/substrate as separate logical ownership zones inside the one physical kind cluster.
 - Use three independently reconciled Argo app-of-apps roots for shared substrate, the application cluster, and the observability cluster stand-in; preserve the existing kind root identity for shared/bootstrap ownership.
-- Preserve Argo's default Application health semantics: roots declare independently reconciling children, child waves provide coarse creation order, and retries/readiness produce eventual convergence without parent health customization.
+- Preserve Argo's default Application semantics: roots declare independently reconciling children, child waves provide coarse creation order, Kubernetes controllers/readiness handle runtime convergence, and Argo exposes sync failures after its bounded default retries.
 - Keep Alloy and other cluster-local collectors with the application root, but place Mimir, Grafana, and future Tempo/Loki/Pyroscope/alerting under the observability root.
 - Keep central observability backends unmeshed by default and use native TLS plus real authentication for telemetry crossing from the meshed application-cluster collector boundary.
 - Keep MinIO, cert-manager, and other generic platform dependencies outside both the application and observability app ownership trees where their capabilities are shared.

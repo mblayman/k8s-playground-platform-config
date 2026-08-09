@@ -215,7 +215,7 @@ mise run argocd:install --name {{ usage.name }}
 mise run minio:bootstrap-secrets --name {{ usage.name }}
 mise run mimir:bootstrap-secrets --name {{ usage.name }}
 mise run grafana:bootstrap-secrets --name {{ usage.name }}
-mise run argocd:bootstrap-root --name {{ usage.name }}
+mise run argocd:bootstrap-roots --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
 mise run gateway:wait --name {{ usage.name }}
 mise run management-gateway:wait --name {{ usage.name }}
@@ -656,18 +656,22 @@ kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait applicatio
 kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get application {{ usage.app }} -o wide
 '''
 
-[tasks."argocd:bootstrap-root"]
-description = "Apply the kind root Argo CD application and wait for expected child apps"
+[tasks."argocd:bootstrap-roots"]
+description = "Apply the three kind Argo roots and wait for every child app"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
-flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
-flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir alloy grafana cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway istio-managementgateway gateway-api-config argocd-config management-gateway-config k8s-playground-service"
+flag "--shared-manifest <shared-manifest>" help="shared root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/shared.yaml"
+flag "--observability-manifest <observability-manifest>" help="observability root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/observability.yaml"
+flag "--application-manifest <application-manifest>" help="application-cluster root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
+flag "--root-apps <root-apps>" help="space-separated root Argo CD Application names" default="k8s-playground-kind-root k8s-playground-kind-observability-root k8s-playground-kind-application-root"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories argocd-config cert-manager cert-manager-config minio observability-object-storage-config mimir grafana istio-base istiod istio-cni istio-ingressgateway istio-managementgateway alloy gateway-api-config management-gateway-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''
-kubectl --context kind-{{ usage.name }} apply -f {{ usage.manifest }}
+kubectl --context kind-{{ usage.name }} apply -f {{ usage.shared_manifest }}
+kubectl --context kind-{{ usage.name }} apply -f {{ usage.observability_manifest }}
+kubectl --context kind-{{ usage.name }} apply -f {{ usage.application_manifest }}
 
 wait_application() {
   app="$1"
@@ -688,7 +692,10 @@ wait_application() {
   kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} wait application/$app --for=jsonpath='{.status.health.status}'=Healthy --timeout={{ usage.timeout }}s
 }
 
-wait_application "{{ usage.root_app }}"
+root_apps="{{ usage.root_apps }}"
+for app in $root_apps; do
+  wait_application "$app"
+done
 
 child_apps="{{ usage.child_apps }}"
 for app in $child_apps; do
