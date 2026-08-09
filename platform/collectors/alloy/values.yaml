@@ -28,6 +28,50 @@ alloy:
           }
         }
 
+        otelcol.receiver.otlp "application" {
+          http {
+            endpoint = "0.0.0.0:4318"
+          }
+
+          output {
+            metrics = [otelcol.processor.memory_limiter.application.input]
+          }
+        }
+
+        otelcol.processor.memory_limiter "application" {
+          check_interval = "1s"
+          limit          = "384MiB"
+          spike_limit    = "64MiB"
+
+          output {
+            metrics = [otelcol.processor.batch.application.input]
+          }
+        }
+
+        otelcol.processor.batch "application" {
+          timeout             = "1s"
+          send_batch_size     = 1000
+          send_batch_max_size = 2000
+
+          output {
+            metrics = [otelcol.exporter.otlphttp.mimir.input]
+          }
+        }
+
+        otelcol.exporter.otlphttp "mimir" {
+          client {
+            endpoint = "http://mimir.observability.svc.cluster.local:8080/otlp"
+
+            headers = {
+              "X-Scope-OrgID" = "k8s-playground",
+            }
+
+            tls {
+              insecure = true
+            }
+          }
+        }
+
         prometheus.scrape "kubelet" {
           targets           = discovery.kubernetes.local_node.targets
           forward_to        = [prometheus.remote_write.mimir.receiver]
@@ -67,6 +111,12 @@ alloy:
         valueFrom:
           fieldRef:
             fieldPath: spec.nodeName
+    extraPorts:
+      - name: otlp-http
+        port: 4318
+        targetPort: 4318
+        protocol: TCP
+        appProtocol: http
     resources:
       requests:
         cpu: 100m

@@ -106,8 +106,21 @@ ruby -ryaml -e '
   docs = YAML.load_stream(File.read("/tmp/opencode/alloy-rendered.yaml")).compact
   cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "alloy" }
   daemonset = docs.find { |doc| doc["kind"] == "DaemonSet" && doc.dig("metadata", "name") == "alloy" }
+  service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "alloy" }
+  peer_authentication = docs.find { |doc| doc["kind"] == "PeerAuthentication" && doc.dig("metadata", "name") == "alloy-otlp" }
+  authorization_policy = docs.find { |doc| doc["kind"] == "AuthorizationPolicy" && doc.dig("metadata", "name") == "alloy-otlp" }
+  config = cm.fetch("data").fetch("config.alloy")
+  otlp_port = service.fetch("spec").fetch("ports").find { |port| port["name"] == "otlp-http" }
+  rule = authorization_policy.dig("spec", "rules").fetch(0)
   abort "Alloy pods must explicitly request Istio injection" unless daemonset.dig("spec", "template", "metadata", "annotations", "sidecar.istio.io/inject") == "true"
-  File.write("/tmp/opencode/config.alloy", cm.fetch("data").fetch("config.alloy"))
+  abort "Alloy Service must expose OTLP/HTTP on port 4318" unless otlp_port["port"] == 4318 && otlp_port["targetPort"] == 4318 && otlp_port["appProtocol"] == "http"
+  abort "Alloy OTLP port must require strict mTLS" unless peer_authentication.dig("spec", "portLevelMtls", "4318", "mode") == "STRICT"
+  abort "Alloy OTLP authorization must allow only the application ServiceAccount" unless rule.dig("from", 0, "source", "principals") == ["cluster.local/ns/k8s-playground-service/sa/k8s-playground-service"]
+  abort "Alloy OTLP authorization must allow only POST /v1/metrics on 4318" unless rule.dig("to", 0, "operation") == {"ports" => ["4318"], "methods" => ["POST"], "paths" => ["/v1/metrics"]}
+  abort "Alloy OTLP metrics pipeline is incomplete" unless config.include?(%q(otelcol.receiver.otlp "application")) && config.include?(%q(endpoint = "0.0.0.0:4318")) && config.include?(%q(otelcol.processor.memory_limiter "application")) && config.include?(%q(otelcol.processor.batch "application")) && config.include?(%q(otelcol.exporter.otlphttp "mimir"))
+  abort "Application metrics must remain OTLP through Mimir ingestion" unless config.include?(%q(endpoint = "http://mimir.observability.svc.cluster.local:8080/otlp")) && config.include?(%q(metrics = [otelcol.exporter.otlphttp.mimir.input])) && !config.include?(%q(otelcol.exporter.prometheus "application"))
+  abort "Alloy must not accept unrouted OTLP logs or traces" if config.match?(/^\s*(logs|traces)\s*=/)
+  File.write("/tmp/opencode/config.alloy", config)
 '
 docker run --rm \
   -v /tmp/opencode/config.alloy:/etc/alloy/config.alloy:ro \
