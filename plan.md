@@ -800,12 +800,11 @@ platform/
     cni/
     ingressgateway/
     managementgateway/
-  object-storage/
-    consumers/
-      observability/
+  minio/
   observability/
     grafana/
     mimir/
+    object-storage-config/
 
 scripts/
   manage-kind-hosts.rb
@@ -903,8 +902,8 @@ k8s-playground-argocd-apps/
 - [x] Add a restricted `observability` Argo `AppProject`; move only Mimir and Grafana wiring into the observability root while preserving their Application names, tracking, namespaces, and live resources.
 - [x] Move Istio, gateway configuration, Alloy, and `k8s-playground-service` wiring into the application root while preserving existing Application and Helm release identities.
 - [x] Replace the single-root workflow with independent shared-root, observability-root, and application-root reconciliation; wait for all three roots before generating smoke-test traffic without delaying application-root reconciliation on observability health.
-- [ ] Keep MinIO and `observability-object-storage-config` top-level, then move the latter desired-state path from `platform/observability/object-storage-config` to a generic consumer-provisioning path under `platform/object-storage/consumers/observability`.
-- [ ] Give the generic MinIO service a provider-like HTTPS contract using cert-manager, retain scoped S3 credentials as the authorization mechanism, and update the provisioning Job and Mimir client to verify the server certificate rather than use plaintext object-storage transport.
+- [x] Keep generic MinIO desired state under `platform/minio` and observability-specific bucket/policy desired state under `platform/observability/object-storage-config`; keep the provisioning Application in the shared root because its Job runs in the `minio` namespace with provider administration credentials.
+- [ ] Give the generic MinIO service a provider-like HTTPS contract using cert-manager, expose Service port `443` over the internal MinIO API port `9000`, retain scoped S3 credentials as the authorization mechanism, and update the provisioning Job and Mimir client to verify the server certificate rather than use plaintext object-storage transport.
 - [ ] Move Alloy desired state from `platform/observability/alloy` to `platform/collectors/alloy` while preserving the `alloy` Application name, Helm release name, namespace, and live resources.
 - [ ] Move Alloy from wave `30` to wave `55`, enable selective revision-based Istio injection, and verify that it eventually converges after Istio CNI and retains all healthy kubelet/cAdvisor targets through the sidecar.
 - [ ] Expose Alloy's OTLP/HTTP receiver on internal port `4318`, require strict mTLS, and allow ingestion only from explicitly approved application-cluster ServiceAccounts.

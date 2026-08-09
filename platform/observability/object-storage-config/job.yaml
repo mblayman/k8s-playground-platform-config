@@ -40,7 +40,7 @@ spec:
             - /bin/sh
             - -ec
             - |
-              until mc --config-dir /tmp/mc alias set local http://minio.minio.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+              until mc --config-dir /tmp/mc alias set local https://minio.minio.svc.cluster.local "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
                 sleep 5
               done
 
@@ -63,9 +63,18 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: minio-ca
+              mountPath: /tmp/mc/certs/CAs
+              readOnly: true
       volumes:
         - name: policies
           configMap:
             name: observability-object-storage-policies
         - name: tmp
           emptyDir: {}
+        - name: minio-ca
+          secret:
+            secretName: minio-tls
+            items:
+              - key: ca.crt
+                path: minio-ca.crt

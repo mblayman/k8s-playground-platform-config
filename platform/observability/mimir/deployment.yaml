@@ -4,6 +4,8 @@ metadata:
   name: mimir
   labels:
     app.kubernetes.io/name: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   replicas: 1
   selector:
@@ -70,6 +72,9 @@ spec:
               readOnly: true
             - name: data
               mountPath: /data
+            - name: minio-ca
+              mountPath: /etc/mimir/minio-ca
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -77,3 +82,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: mimir-data
+        - name: minio-ca
+          secret:
+            secretName: minio-client-ca
+            items:
+              - key: ca.crt
+                path: ca.crt

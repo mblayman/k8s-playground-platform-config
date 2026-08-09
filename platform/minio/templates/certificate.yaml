@@ -1,0 +1,24 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: minio-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  secretName: minio-tls
+  dnsNames:
+    - minio
+    - minio.minio
+    - minio.minio.svc
+    - minio.minio.svc.cluster.local
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always

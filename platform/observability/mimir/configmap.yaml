@@ -21,11 +21,13 @@ data:
       bucket_store:
         sync_dir: /data/tsdb-sync
       s3:
-        endpoint: minio.minio.svc.cluster.local:9000
+        endpoint: minio.minio.svc.cluster.local:443
         bucket_name: mimir-blocks
         access_key_id: ${AWS_ACCESS_KEY_ID}
         secret_access_key: ${AWS_SECRET_ACCESS_KEY}
-        insecure: true
+        insecure: false
+        http:
+          tls_ca_path: /etc/mimir/minio-ca/ca.crt
       tsdb:
         dir: /data/tsdb
 
@@ -44,11 +46,13 @@ data:
     alertmanager_storage:
       backend: s3
       s3:
-        endpoint: minio.minio.svc.cluster.local:9000
+        endpoint: minio.minio.svc.cluster.local:443
         bucket_name: mimir-alertmanager
         access_key_id: ${AWS_ACCESS_KEY_ID}
         secret_access_key: ${AWS_SECRET_ACCESS_KEY}
-        insecure: true
+        insecure: false
+        http:
+          tls_ca_path: /etc/mimir/minio-ca/ca.crt
 
     ruler:
       enable_api: true
@@ -58,11 +62,13 @@ data:
     ruler_storage:
       backend: s3
       s3:
-        endpoint: minio.minio.svc.cluster.local:9000
+        endpoint: minio.minio.svc.cluster.local:443
         bucket_name: mimir-ruler
         access_key_id: ${AWS_ACCESS_KEY_ID}
         secret_access_key: ${AWS_SECRET_ACCESS_KEY}
-        insecure: true
+        insecure: false
+        http:
+          tls_ca_path: /etc/mimir/minio-ca/ca.crt
 
     runtime_config:
       file: /etc/mimir/runtime.yaml
