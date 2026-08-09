@@ -20,10 +20,21 @@ alloy:
           }
 
           endpoint {
-            url = "http://mimir.observability.svc.cluster.local:8080/api/v1/push"
+            url = "https://mimir.observability.svc.cluster.local/api/v1/push"
+            remote_timeout = "10s"
 
-            headers = {
-              "X-Scope-OrgID" = "k8s-playground",
+            tls_config {
+              ca_file     = "/var/run/mimir-tls/ca.crt"
+              cert_file   = "/var/run/mimir-tls/tls.crt"
+              key_file    = "/var/run/mimir-tls/tls.key"
+              server_name = "mimir.observability.svc.cluster.local"
+              min_version = "TLS12"
+            }
+
+            queue_config {
+              min_backoff      = "500ms"
+              max_backoff      = "10s"
+              sample_age_limit = "15m"
             }
           }
         }
@@ -60,15 +71,30 @@ alloy:
 
         otelcol.exporter.otlphttp "mimir" {
           client {
-            endpoint = "http://mimir.observability.svc.cluster.local:8080/otlp"
-
-            headers = {
-              "X-Scope-OrgID" = "k8s-playground",
-            }
+            endpoint = "https://mimir.observability.svc.cluster.local/otlp"
 
             tls {
-              insecure = true
+              ca_file         = "/var/run/mimir-tls/ca.crt"
+              cert_file       = "/var/run/mimir-tls/tls.crt"
+              key_file        = "/var/run/mimir-tls/tls.key"
+              server_name     = "mimir.observability.svc.cluster.local"
+              reload_interval = "1m"
             }
+          }
+
+          retry_on_failure {
+            enabled          = true
+            initial_interval = "1s"
+            max_interval     = "10s"
+            max_elapsed_time = "5m"
+          }
+
+          sending_queue {
+            enabled           = true
+            num_consumers     = 3
+            queue_size        = 1000
+            block_on_overflow = false
+            wait_for_result   = false
           }
         }
 
@@ -136,6 +162,9 @@ alloy:
         - name: kubelet-serving-ca
           mountPath: /var/run/kubelet-pki/kubelet.crt
           readOnly: true
+        - name: mimir-client-tls
+          mountPath: /var/run/mimir-tls
+          readOnly: true
 
   configReloader:
     securityContext:
@@ -161,6 +190,9 @@ alloy:
           hostPath:
             path: /var/lib/kubelet/pki/kubelet.crt
             type: File
+        - name: mimir-client-tls
+          secret:
+            secretName: alloy-mimir-client-tls
 
   global:
     podSecurityContext:

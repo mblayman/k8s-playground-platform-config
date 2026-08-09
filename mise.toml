@@ -1,4 +1,5 @@
 [tools]
+cmctl = "2.5.0"
 helm = "3.21.3"
 
 [tasks."validate:scripts"]
@@ -33,12 +34,15 @@ run = "kubectl kustomize platform/argocd/config >/dev/null"
 [tasks."validate:minio"]
 description = "Render the MinIO wrapper Helm chart"
 run = '''
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
 helm dependency update platform/minio >/dev/null
 helm template minio platform/minio \
   --namespace minio \
-  >/tmp/opencode/minio-rendered.yaml
+  >"$validation_dir/minio-rendered.yaml"
+VALIDATION_DIR="$validation_dir" \
 ruby -ryaml -e '
-  docs = YAML.load_stream(File.read("/tmp/opencode/minio-rendered.yaml")).compact
+  docs = YAML.load_stream(File.read(File.join(ENV.fetch("VALIDATION_DIR"), "minio-rendered.yaml"))).compact
   certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "minio-server" }
   service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "minio" }
   deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "minio" }
@@ -53,9 +57,12 @@ ruby -ryaml -e '
 [tasks."validate:observability-object-storage-config"]
 description = "Render and validate observability object storage bucket config"
 run = '''
-kubectl kustomize platform/observability/object-storage-config >/tmp/opencode/observability-object-storage-rendered.yaml
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
+kubectl kustomize platform/observability/object-storage-config >"$validation_dir/observability-object-storage-rendered.yaml"
+VALIDATION_DIR="$validation_dir" \
 ruby -ryaml -e '
-  docs = YAML.load_stream(File.read("/tmp/opencode/observability-object-storage-rendered.yaml")).compact
+  docs = YAML.load_stream(File.read(File.join(ENV.fetch("VALIDATION_DIR"), "observability-object-storage-rendered.yaml"))).compact
   job = docs.find { |doc| doc["kind"] == "Job" && doc.dig("metadata", "name") == "observability-object-storage-config" }
   pod_spec = job.dig("spec", "template", "spec")
   command = pod_spec.fetch("containers").first.fetch("command").last
@@ -68,23 +75,42 @@ ruby -ryaml -e '
 [tasks."validate:mimir"]
 description = "Render and validate the Mimir single-binary manifests"
 run = '''
-kubectl kustomize platform/observability/mimir >/tmp/opencode/mimir-rendered.yaml
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
+kubectl kustomize platform/observability/mimir >"$validation_dir/mimir-rendered.yaml"
+VALIDATION_DIR="$validation_dir" \
 ruby -ryaml -e '
-  docs = YAML.load_stream(File.read("/tmp/opencode/mimir-rendered.yaml")).compact
+  validation_dir = ENV.fetch("VALIDATION_DIR")
+  docs = YAML.load_stream(File.read(File.join(validation_dir, "mimir-rendered.yaml"))).compact
   cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "mimir-config" }
   certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "minio-client-ca" }
   deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "mimir" }
+  gateway_cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name").start_with?("mimir-gateway-") }
+  gateway_certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "mimir-gateway" }
+  gateway_deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "mimir-gateway" }
+  gateway_service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "mimir" }
+  internal_service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "mimir-internal" }
   config = cm.fetch("data").fetch("mimir.yaml")
+  envoy = gateway_cm.fetch("data").fetch("envoy.yaml")
   ca_volume = deployment.dig("spec", "template", "spec", "volumes").find { |volume| volume["name"] == "minio-ca" }
   abort "Mimir MinIO CA Certificate is missing" unless certificate.dig("spec", "secretName") == "minio-client-ca"
   abort "Mimir must use verified MinIO HTTPS on port 443" unless config.scan("endpoint: minio.minio.svc.cluster.local:443").length == 3 && config.scan("tls_ca_path: /etc/mimir/minio-ca/ca.crt").length == 3 && !config.include?("insecure: true")
   abort "Mimir does not mount the MinIO CA" unless ca_volume.dig("secret", "secretName") == "minio-client-ca" && ca_volume.dig("secret", "items").any? { |item| item["key"] == "ca.crt" }
-  File.write("/tmp/opencode/mimir.yaml", config)
-  File.write("/tmp/opencode/runtime.yaml", cm.fetch("data").fetch("runtime.yaml"))
+  abort "Mimir internal clients must bypass the authenticated gateway" unless config.include?("http://mimir-internal.observability.svc.cluster.local:8080/alertmanager")
+  abort "Mimir gateway Certificate rotation is not configured" unless gateway_certificate.dig("spec", "secretName") == "mimir-gateway-tls" && gateway_certificate.dig("spec", "duration") == "2160h" && gateway_certificate.dig("spec", "renewBefore") == "720h" && gateway_certificate.dig("spec", "privateKey", "rotationPolicy") == "Always"
+  abort "Mimir gateway must run two replicas" unless gateway_deployment.dig("spec", "replicas") == 2
+  abort "Mimir must expose only authenticated HTTPS" unless gateway_service.dig("spec", "selector", "app.kubernetes.io/name") == "mimir-gateway" && gateway_service.dig("spec", "ports") == [{"name" => "https", "port" => 443, "targetPort" => "https", "appProtocol" => "https"}]
+  abort "Raw Mimir must remain internal on 8080" unless internal_service.dig("spec", "selector", "app.kubernetes.io/name") == "mimir" && internal_service.dig("spec", "ports").any? { |port| port["name"] == "http" && port["port"] == 8080 }
+  abort "Mimir gateway does not enforce the Alloy certificate identity" unless envoy.include?("spiffe://k8s-playground/collectors/alloy") && envoy.include?("require_client_certificate: true")
+  abort "Mimir gateway route allowlist is incomplete" unless envoy.include?("path: /api/v1/push") && envoy.include?("path: /otlp/v1/metrics") && envoy.include?("append_action: OVERWRITE_IF_EXISTS_OR_ADD")
+  abort "Mimir gateway does not watch certificate rotations" unless envoy.scan("watched_directory:").length == 2
+  File.write(File.join(validation_dir, "mimir.yaml"), config)
+  File.write(File.join(validation_dir, "runtime.yaml"), cm.fetch("data").fetch("runtime.yaml"))
+  File.write(File.join(validation_dir, "mimir-gateway-envoy.yaml"), envoy)
 '
 docker run --rm \
-  -v /tmp/opencode/mimir.yaml:/etc/mimir/mimir.yaml:ro \
-  -v /tmp/opencode/runtime.yaml:/etc/mimir/runtime.yaml:ro \
+  -v "$validation_dir/mimir.yaml:/etc/mimir/mimir.yaml:ro" \
+  -v "$validation_dir/runtime.yaml:/etc/mimir/runtime.yaml:ro" \
   -e AWS_ACCESS_KEY_ID=test \
   -e AWS_SECRET_ACCESS_KEY=test \
   grafana/mimir:3.1.2 \
@@ -93,22 +119,46 @@ docker run --rm \
   -config.expand-env=true \
   -print.config \
   >/dev/null
+mkdir -p "$validation_dir/mimir-gateway-tls"
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$validation_dir/mimir-gateway-tls/tls.key" \
+  -out "$validation_dir/mimir-gateway-tls/tls.crt" \
+  -subj /CN=mimir.observability.svc.cluster.local \
+  -days 1 \
+  >/dev/null 2>&1
+openssl x509 \
+  -in "$validation_dir/mimir-gateway-tls/tls.crt" \
+  -out "$validation_dir/mimir-gateway-tls/ca.crt"
+chmod 0644 "$validation_dir/mimir-gateway-tls/tls.key"
+docker run --rm \
+  --user 0:0 \
+  -v "$validation_dir/mimir-gateway-envoy.yaml:/etc/envoy/envoy.yaml:ro" \
+  -v "$validation_dir/mimir-gateway-tls:/etc/envoy/tls:ro" \
+  envoyproxy/envoy:v1.36.4 \
+  --mode validate \
+  -c /etc/envoy/envoy.yaml \
+  >/dev/null
 '''
 
 [tasks."validate:alloy"]
 description = "Render the Alloy wrapper chart and validate its runtime config"
 run = '''
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
 helm dependency update platform/collectors/alloy >/dev/null
 helm template alloy platform/collectors/alloy \
   --namespace observability-collectors \
-  >/tmp/opencode/alloy-rendered.yaml
+  >"$validation_dir/alloy-rendered.yaml"
+VALIDATION_DIR="$validation_dir" \
 ruby -ryaml -e '
-  docs = YAML.load_stream(File.read("/tmp/opencode/alloy-rendered.yaml")).compact
+  validation_dir = ENV.fetch("VALIDATION_DIR")
+  docs = YAML.load_stream(File.read(File.join(validation_dir, "alloy-rendered.yaml"))).compact
   cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "alloy" }
   daemonset = docs.find { |doc| doc["kind"] == "DaemonSet" && doc.dig("metadata", "name") == "alloy" }
   service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "alloy" }
   peer_authentication = docs.find { |doc| doc["kind"] == "PeerAuthentication" && doc.dig("metadata", "name") == "alloy-otlp" }
   authorization_policy = docs.find { |doc| doc["kind"] == "AuthorizationPolicy" && doc.dig("metadata", "name") == "alloy-otlp" }
+  mimir_certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "alloy-mimir-client" }
   config = cm.fetch("data").fetch("config.alloy")
   otlp_port = service.fetch("spec").fetch("ports").find { |port| port["name"] == "otlp-http" }
   rule = authorization_policy.dig("spec", "rules").fetch(0)
@@ -118,19 +168,68 @@ ruby -ryaml -e '
   abort "Alloy OTLP authorization must allow only the application ServiceAccount" unless rule.dig("from", 0, "source", "principals") == ["cluster.local/ns/k8s-playground-service/sa/k8s-playground-service"]
   abort "Alloy OTLP authorization must allow only POST /v1/metrics on 4318" unless rule.dig("to", 0, "operation") == {"ports" => ["4318"], "methods" => ["POST"], "paths" => ["/v1/metrics"]}
   abort "Alloy OTLP metrics pipeline is incomplete" unless config.include?(%q(otelcol.receiver.otlp "application")) && config.include?(%q(endpoint = "0.0.0.0:4318")) && config.include?(%q(otelcol.processor.memory_limiter "application")) && config.include?(%q(otelcol.processor.batch "application")) && config.include?(%q(otelcol.exporter.otlphttp "mimir"))
-  abort "Application metrics must remain OTLP through Mimir ingestion" unless config.include?(%q(endpoint = "http://mimir.observability.svc.cluster.local:8080/otlp")) && config.include?(%q(metrics = [otelcol.exporter.otlphttp.mimir.input])) && !config.include?(%q(otelcol.exporter.prometheus "application"))
+  abort "Application metrics must remain OTLP through Mimir ingestion" unless config.include?(%q(endpoint = "https://mimir.observability.svc.cluster.local/otlp")) && config.include?(%q(metrics = [otelcol.exporter.otlphttp.mimir.input])) && !config.include?(%q(otelcol.exporter.prometheus "application"))
+  abort "Alloy Mimir client Certificate rotation is not configured" unless mimir_certificate.dig("spec", "secretName") == "alloy-mimir-client-tls" && mimir_certificate.dig("spec", "uris") == ["spiffe://k8s-playground/collectors/alloy"] && mimir_certificate.dig("spec", "duration") == "2160h" && mimir_certificate.dig("spec", "renewBefore") == "720h" && mimir_certificate.dig("spec", "privateKey", "rotationPolicy") == "Always"
+  abort "Alloy must use authenticated HTTPS for both Mimir write protocols" unless config.include?(%q(url = "https://mimir.observability.svc.cluster.local/api/v1/push")) && config.scan(%q(ca_file     = "/var/run/mimir-tls/ca.crt")).length >= 1 && config.scan(%q(cert_file   = "/var/run/mimir-tls/tls.crt")).length >= 1 && config.scan(%q(key_file    = "/var/run/mimir-tls/tls.key")).length >= 1 && config.include?(%q(reload_interval = "1m")) && !config.include?("http://mimir.observability")
+  abort "Alloy must not set the Mimir tenant header directly" if config.include?("X-Scope-OrgID")
+  abort "Alloy Mimir exporters must have bounded non-blocking retries" unless config.include?(%q(remote_timeout = "10s")) && config.include?(%q(sample_age_limit = "15m")) && config.include?(%q(max_elapsed_time = "5m")) && config.include?(%q(block_on_overflow = false)) && config.include?(%q(wait_for_result   = false))
   abort "Alloy must not accept unrouted OTLP logs or traces" if config.match?(/^\s*(logs|traces)\s*=/)
-  File.write("/tmp/opencode/config.alloy", config)
+  File.write(File.join(validation_dir, "config.alloy"), config)
 '
 docker run --rm \
-  -v /tmp/opencode/config.alloy:/etc/alloy/config.alloy:ro \
+  -v "$validation_dir/config.alloy:/etc/alloy/config.alloy:ro" \
   grafana/alloy:v1.18.0 \
   validate /etc/alloy/config.alloy
+'''
+
+[tasks."mimir:renew-ingest-certificates"]
+description = "Force and verify Mimir gateway and Alloy client certificate renewal"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--timeout <seconds>" help="renewal timeout" default="180"
+'''
+run = '''
+context="kind-{{ usage.name }}"
+
+fingerprint() {
+  namespace="$1"
+  secret="$2"
+  kubectl --context "$context" -n "$namespace" get secret "$secret" -o jsonpath='{.data.tls\.crt}' \
+    | base64 --decode \
+    | openssl x509 -noout -fingerprint -sha256
+}
+
+server_before="$(fingerprint observability mimir-gateway-tls)"
+client_before="$(fingerprint observability-collectors alloy-mimir-client-tls)"
+
+cmctl renew --context "$context" --namespace observability mimir-gateway
+cmctl renew --context "$context" --namespace observability-collectors alloy-mimir-client
+
+deadline=$(( $(date +%s) + {{ usage.timeout }} ))
+while true; do
+  server_after="$(fingerprint observability mimir-gateway-tls)"
+  client_after="$(fingerprint observability-collectors alloy-mimir-client-tls)"
+  server_ready="$(kubectl --context "$context" -n observability get certificate mimir-gateway -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+  client_ready="$(kubectl --context "$context" -n observability-collectors get certificate alloy-mimir-client -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+
+  if [ "$server_after" != "$server_before" ] && [ "$client_after" != "$client_before" ] && [ "$server_ready" = "True" ] && [ "$client_ready" = "True" ]; then
+    printf 'Mimir gateway and Alloy client certificates renewed successfully.\n'
+    break
+  fi
+
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    printf 'Timed out waiting for Mimir ingest certificate renewal.\n' >&2
+    exit 1
+  fi
+  sleep 2
+done
 '''
 
 [tasks."validate:grafana"]
 description = "Render the Grafana wrapper chart and validate its provisioning"
 run = '''
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
 for dashboard in platform/observability/grafana/dashboards/*.json; do
   jq empty "$dashboard"
 done
@@ -156,8 +255,8 @@ helm dependency update platform/observability/grafana >/dev/null
 helm lint platform/observability/grafana >/dev/null
 helm template grafana platform/observability/grafana \
   --namespace observability \
-  >/tmp/opencode/grafana-rendered.yaml
-ruby -ryaml -rjson -e 'docs = YAML.load_stream(File.read("/tmp/opencode/grafana-rendered.yaml")); service = docs.find { |doc| doc&.dig("kind") == "Service" && doc.dig("metadata", "name") == "grafana" }; abort "Grafana Service is not a ClusterIP" unless service&.dig("spec", "type") == "ClusterIP"; config = docs.select { |doc| doc&.dig("kind") == "ConfigMap" }.flat_map { |doc| doc.fetch("data", {}).values }.join("\n"); abort "Grafana management URL is missing" unless config.include?("https://grafana.k8s-playground.test/"); abort "Mimir datasource tenant header is missing" unless config.include?("X-Scope-OrgID") && config.include?("k8s-playground"); dashboards = docs.find { |doc| doc&.dig("kind") == "ConfigMap" && doc.dig("metadata", "name") == "grafana-platform-dashboards" }; abort "Grafana dashboards are missing" unless dashboards&.fetch("data", {})&.length == 2; dashboards.fetch("data").each_value { |json| JSON.parse(json) }'
+  >"$validation_dir/grafana-rendered.yaml"
+VALIDATION_DIR="$validation_dir" ruby -ryaml -rjson -e 'docs = YAML.load_stream(File.read(File.join(ENV.fetch("VALIDATION_DIR"), "grafana-rendered.yaml"))); service = docs.find { |doc| doc&.dig("kind") == "Service" && doc.dig("metadata", "name") == "grafana" }; abort "Grafana Service is not a ClusterIP" unless service&.dig("spec", "type") == "ClusterIP"; config = docs.select { |doc| doc&.dig("kind") == "ConfigMap" }.flat_map { |doc| doc.fetch("data", {}).values }.join("\n"); abort "Grafana management URL is missing" unless config.include?("https://grafana.k8s-playground.test/"); abort "Grafana must use the internal Mimir query endpoint" unless config.include?("http://mimir-internal.observability.svc.cluster.local:8080/prometheus"); abort "Mimir datasource tenant header is missing" unless config.include?("X-Scope-OrgID") && config.include?("k8s-playground"); dashboards = docs.find { |doc| doc&.dig("kind") == "ConfigMap" && doc.dig("metadata", "name") == "grafana-platform-dashboards" }; abort "Grafana dashboards are missing" unless dashboards&.fetch("data", {})&.length == 2; dashboards.fetch("data").each_value { |json| JSON.parse(json) }'
 '''
 
 [tasks."validate:cert-manager"]

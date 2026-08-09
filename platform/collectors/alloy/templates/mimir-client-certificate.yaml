@@ -1,0 +1,26 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: alloy-mimir-client
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  secretName: alloy-mimir-client-tls
+  duration: 2160h
+  renewBefore: 720h
+  uris:
+    - spiffe://k8s-playground/collectors/alloy
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - client auth

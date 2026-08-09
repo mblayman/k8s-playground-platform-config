@@ -4,14 +4,15 @@ metadata:
   name: mimir
   labels:
     app.kubernetes.io/name: mimir
+    app.kubernetes.io/component: gateway
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: mimir
+    app.kubernetes.io/name: mimir-gateway
   ports:
-    - name: http
-      port: 8080
-      targetPort: http
-    - name: grpc
-      port: 9095
-      targetPort: grpc
+    - name: https
+      port: 443
+      targetPort: https
+      appProtocol: https

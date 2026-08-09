@@ -73,7 +73,7 @@ grafana:
           uid: mimir
           type: prometheus
           access: proxy
-          url: http://mimir.observability.svc.cluster.local:8080/prometheus
+          url: http://mimir-internal.observability.svc.cluster.local:8080/prometheus
           isDefault: true
           editable: false
           jsonData:

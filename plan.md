@@ -109,7 +109,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added desired-state Mimir single-binary manifests under `platform/observability/mimir`, using `grafana/mimir:3.1.2`, local PVC working storage, separate MinIO buckets for blocks, ruler, and Alertmanager storage, and dedicated local bootstrap-created `mimir-object-storage-credentials`. The observability object-storage config creates a MinIO user and policy scoped to those three Mimir buckets instead of giving Mimir MinIO root credentials.
 - Decided alerting should use Mimir ruler plus Alertmanager as the primary learning and production-aligned path, not Grafana Alerting as the default. Grafana remains the visualization UI and can display alert state, but Alertmanager concepts are the priority for platform-team readiness.
 - Decided on a functional observability namespace split: backend/UI components such as Mimir, Loki, Tempo, Pyroscope, Grafana, and Alertmanager-related resources live in `observability`; privileged node-level collectors such as Alloy log/node agents and Beyla live in `observability-collectors`; generic MinIO object storage remains in `minio`.
-- Added desired-state Grafana Alloy as a workload-adjacent collector, now under `platform/collectors/alloy` at wave `55` in the application root. Its DaemonSet selects Istio revision `stable`, discovers only its local node, scrapes authenticated kubelet and cAdvisor metrics every 30 seconds through a native sidecar, and remote-writes to Mimir tenant `k8s-playground` with a `cluster=k8s-playground` external label.
+- Added desired-state Grafana Alloy as a workload-adjacent collector, now under `platform/collectors/alloy` at wave `55` in the application root. Its DaemonSet selects Istio revision `stable`, discovers only its local node, scrapes authenticated kubelet and cAdvisor metrics every 30 seconds through a native sidecar, and remote-writes them to Mimir tenant `k8s-playground` with a `cluster=k8s-playground` external label. Its metrics-only OTLP/HTTP receiver on port `4318` requires strict mTLS, authorizes the application ServiceAccount for `POST /v1/metrics`, and preserves native OTLP through Mimir's `/otlp/v1/metrics` endpoint.
 
 Current local cluster tasks:
 
@@ -550,6 +550,12 @@ Networking rules:
 - Use Kubernetes Service DNS as the kind-local stand-in for private cross-cluster DNS, but keep exporter configuration, CA trust, authentication, retries, and timeouts portable to a remote endpoint.
 - Treat Grafana sharing the local Istio management gateway with Argo CD as an explicit playground convenience. In a dedicated observability cluster, Grafana would use that environment's ingress and identity boundary.
 - Do not rely on physical same-cluster reachability as the security model. The desired boundary is workload identity and mTLS inside the application cluster, then native TLS and authentication when telemetry leaves it.
+- Use `mimir.observability.svc.cluster.local:443` as the authenticated write contract and keep raw query, admin, and internal APIs on `mimir-internal.observability.svc.cluster.local:8080` inside the logical observability environment.
+- Terminate native mutual TLS at an unmeshed Envoy gateway, authorize only the Alloy client certificate URI `spiffe://k8s-playground/collectors/alloy`, expose only Mimir remote-write and native OTLP metrics paths, and set `X-Scope-OrgID` at the gateway rather than trust callers to choose a tenant.
+- Treat `mimir-internal` isolation as explicit network handwaving in the single kind cluster. kindnet does not enforce NetworkPolicy, so any cluster workload, including a deliberately reconfigured Alloy, can bypass the gateway and reach raw Mimir. The gateway proves the intended authenticated contract, not exclusive local reachability.
+- In production, place `mimir-internal` only on the observability cluster network and export only the authenticated gateway through private cross-cluster DNS, routing, firewall, or security-policy controls. Do not export the raw Kubernetes Service or assume that a `ClusterIP` name creates isolation.
+- Issue 90-day gateway and Alloy client leaves with cert-manager, renew them 30 days early with private-key rotation, reload Envoy through filesystem certificate watches, and reload Alloy's file-based TLS clients without pod replacement. Force renewal during validation and prove both write protocols continue without workload UID changes.
+- Treat rotation of the kind-local one-year root CA as a separate trust-management concern. Production CA rotation requires overlapping old/new trust bundles and staged leaf reissuance; do not claim that replacing the root Secret alone is safe.
 
 ### Argo Ownership Model
 
@@ -601,7 +607,7 @@ Implement the fresh-cluster behavior in `cluster:create`/Argo tasks by applying 
 Mimir tenancy model:
 
 - Use one explicit initial tenant: `k8s-playground`.
-- Configure Alloy writes and Grafana reads to include the tenant header `X-Scope-OrgID: k8s-playground` where required by Mimir.
+- Configure the authenticated Mimir write gateway and Grafana reads to apply the tenant header `X-Scope-OrgID: k8s-playground`; Alloy callers do not choose the tenant directly.
 - Treat a Mimir tenant as an operational ownership and isolation boundary, not as a direct copy of every Kubernetes namespace or Deployment.
 - For real platform-team use, prefer a `platform` tenant for Kubernetes, node, ingress, mesh, storage, collector, and control-plane metrics.
 - Add app/team tenants only when separate ownership, limits, retention, access control, noisy-neighbor isolation, or compliance boundaries justify the extra complexity.
@@ -906,8 +912,8 @@ k8s-playground-argocd-apps/
 - [x] Give the generic MinIO service a provider-like HTTPS contract using cert-manager, expose Service port `443` over the internal MinIO API port `9000`, retain scoped S3 credentials as the authorization mechanism, and update the provisioning Job and Mimir client to verify the server certificate rather than use plaintext object-storage transport.
 - [x] Move Alloy desired state from `platform/observability/alloy` to `platform/collectors/alloy` while preserving the `alloy` Application name, Helm release name, namespace, and live resources.
 - [x] Move Alloy from wave `30` to wave `55`, enable selective revision-based Istio injection, and verify that it eventually converges after Istio CNI and retains all healthy kubelet/cAdvisor targets through the sidecar.
-- [ ] Expose Alloy's OTLP/HTTP receiver on internal port `4318`, require strict mTLS, and allow ingestion only from explicitly approved application-cluster ServiceAccounts.
-- [ ] Establish the reusable logical cross-cluster transport on the existing Alloy-to-Mimir path: a dedicated native-TLS ingest endpoint, real caller authentication independent of `X-Scope-OrgID`, explicit CA trust, and bounded retry/timeout behavior.
+- [x] Expose Alloy's OTLP/HTTP receiver on internal port `4318`, require strict mTLS, and allow ingestion only from explicitly approved application-cluster ServiceAccounts.
+- [ ] Establish the reusable logical cross-cluster transport on the existing Alloy-to-Mimir path: an unmeshed native-mTLS gateway on the conventional `mimir` hostname, exact Alloy certificate identity, explicit CA trust and live leaf-certificate reload, gateway-controlled tenant selection, route allowlisting, and bounded non-blocking retry/timeout behavior. Accept and document that `mimir-internal` remains directly reachable in kind until separate cluster networks or an enforcing CNI provide the production boundary.
 - [ ] Verify the new separation end to end: observability backends remain unmeshed, MinIO remains generic/shared, Alloy survives rollout and mesh repair, Mimir still receives all node metrics, and all three Argo roots rebuild and settle without resource recreation.
 - [ ] Verify runtime independence by making the observability root or Mimir temporarily unavailable: the application remains healthy, OTLP export stays non-blocking, and Alloy exhibits bounded retry/buffering behavior until the backend recovers.
 - [ ] Instrument the existing `k8s-playground-service` with bounded-cardinality OTLP metrics and single-service traces, excluding probe noise and sensitive request data.
@@ -982,6 +988,7 @@ k8s-playground-argocd-apps/
 - The existing Alloy DaemonSet accepts application OTLP through its ClusterIP Service without duplicating metrics or traces across Alloy pods.
 - Alloy runs as a selectively meshed application-cluster collector after Istio CNI, requires strict mTLS on OTLP port `4318`, and authorizes only approved application identities.
 - Alloy uses native TLS and real caller authentication, not only a tenant-routing header, when exporting across the logical application-to-observability cluster boundary.
+- The authenticated Mimir gateway is not represented as exclusive network enforcement in kind: `mimir-internal` remains cluster-reachable, while production isolates it on the observability cluster network and exposes only the gateway.
 - Mimir queries for tenant `k8s-playground` return healthy `up` series for `job="kubelet"` and `job="cadvisor"` from all three nodes.
 - On fresh kind cluster creation, all roots and child Applications reconcile independently and eventually become healthy before validation traffic is generated; no parent wave claims child readiness ordering.
 - During an observability outage, the application remains healthy and Alloy retries/buffers exports without making application requests depend on telemetry delivery.

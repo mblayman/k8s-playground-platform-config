@@ -3,8 +3,23 @@ kind: Kustomization
 namespace: observability
 resources:
   - minio-ca.yaml
+  - gateway-certificate.yaml
+  - gateway-serviceaccount.yaml
+  - gateway-deployment.yaml
+  - gateway-pdb.yaml
   - configmap.yaml
   - serviceaccount.yaml
   - pvc.yaml
+  - internal-service.yaml
   - service.yaml
   - deployment.yaml
+configMapGenerator:
+  - name: mimir-gateway
+    files:
+      - envoy.yaml=gateway-envoy.yaml
+    options:
+      labels:
+        app.kubernetes.io/name: mimir-gateway
+        app.kubernetes.io/part-of: k8s-playground
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

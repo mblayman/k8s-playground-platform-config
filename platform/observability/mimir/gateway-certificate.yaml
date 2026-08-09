@@ -1,0 +1,28 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mimir-gateway
+  labels:
+    app.kubernetes.io/name: mimir-gateway
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  secretName: mimir-gateway-tls
+  duration: 2160h
+  renewBefore: 720h
+  dnsNames:
+    - mimir
+    - mimir.observability
+    - mimir.observability.svc
+    - mimir.observability.svc.cluster.local
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - server auth

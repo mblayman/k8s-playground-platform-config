@@ -1,0 +1,22 @@
+# This raw backend is cluster-reachable in kind because kindnet does not enforce
+# NetworkPolicy. Production relies on separate observability-cluster networking.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mimir-internal
+  labels:
+    app.kubernetes.io/name: mimir
+    app.kubernetes.io/component: backend
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mimir
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 9095
+      targetPort: grpc
