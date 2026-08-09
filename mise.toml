@@ -98,11 +98,17 @@ docker run --rm \
 [tasks."validate:alloy"]
 description = "Render the Alloy wrapper chart and validate its runtime config"
 run = '''
-helm dependency update platform/observability/alloy >/dev/null
-helm template alloy platform/observability/alloy \
+helm dependency update platform/collectors/alloy >/dev/null
+helm template alloy platform/collectors/alloy \
   --namespace observability-collectors \
   >/tmp/opencode/alloy-rendered.yaml
-ruby -ryaml -e 'docs = YAML.load_stream(File.read("/tmp/opencode/alloy-rendered.yaml")); cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "alloy" }; File.write("/tmp/opencode/config.alloy", cm.fetch("data").fetch("config.alloy"))'
+ruby -ryaml -e '
+  docs = YAML.load_stream(File.read("/tmp/opencode/alloy-rendered.yaml")).compact
+  cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "alloy" }
+  daemonset = docs.find { |doc| doc["kind"] == "DaemonSet" && doc.dig("metadata", "name") == "alloy" }
+  abort "Alloy pods must explicitly request Istio injection" unless daemonset.dig("spec", "template", "metadata", "annotations", "sidecar.istio.io/inject") == "true"
+  File.write("/tmp/opencode/config.alloy", cm.fetch("data").fetch("config.alloy"))
+'
 docker run --rm \
   -v /tmp/opencode/config.alloy:/etc/alloy/config.alloy:ro \
   grafana/alloy:v1.18.0 \

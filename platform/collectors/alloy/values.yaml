@@ -97,6 +97,8 @@ alloy:
 
   controller:
     type: daemonset
+    podAnnotations:
+      sidecar.istio.io/inject: "true"
     tolerations:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
