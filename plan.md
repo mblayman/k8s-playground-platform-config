@@ -771,10 +771,10 @@ k8s-playground-argocd-apps/
 - [x] Install Grafana through Argo CD with declarative datasources and dashboards.
 - [x] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
 - [x] Initially expose Grafana through a MetalLB-backed `LoadBalancer` Service and configure authentication without committing plaintext credentials.
-- [ ] Install and live-verify a separate Istio management gateway through Argo CD.
-- [ ] Add cert-manager-backed HTTPS host routing for `app.k8s-playground.test`, `argocd.k8s-playground.test`, and `grafana.k8s-playground.test`.
-- [ ] Validate safe `/etc/hosts` check, sync, stale-IP replacement, conflict detection, and managed-block removal against live Gateway IPs.
-- [ ] Return Argo CD and Grafana Services to `ClusterIP` after their management-gateway routes are healthy, then remove the temporary direct Argo CD LoadBalancer bootstrap customization.
+- [x] Install and live-verify a separate Istio management gateway through Argo CD.
+- [x] Add cert-manager-backed HTTPS host routing for `app.k8s-playground.test`, `argocd.k8s-playground.test`, and `grafana.k8s-playground.test`.
+- [x] Validate safe `/etc/hosts` check and sync against live Gateway IPs, with automated stale-IP replacement, conflict detection, and managed-block removal tests.
+- [x] Return Argo CD and Grafana Services to `ClusterIP` after their management-gateway routes are healthy, then remove the temporary direct Argo CD LoadBalancer bootstrap customization.
 - [ ] Migrate Grafana from SQLite on a local PVC to PostgreSQL before adding replicas or claiming production-style high availability.
 - [ ] Install Keycloak in a later identity-learning phase and integrate Grafana through generic OAuth/OIDC with explicit role mapping and a tested break-glass login path.
 - [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
