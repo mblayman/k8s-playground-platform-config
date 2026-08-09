@@ -10,10 +10,19 @@ spec:
   hostnames:
     - grafana.k8s-playground.test
   parentRefs:
-    - name: k8s-playground-management-gateway
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: k8s-playground-management-gateway
       namespace: istio-system
       sectionName: https
   rules:
-    - backendRefs:
-        - name: grafana
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: grafana
           port: 80
+          weight: 1

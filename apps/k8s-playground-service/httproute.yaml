@@ -12,7 +12,9 @@ spec:
   hostnames:
     - app.k8s-playground.test
   parentRefs:
-    - name: k8s-playground-gateway
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: k8s-playground-gateway
       namespace: istio-system
       sectionName: https
   rules:
@@ -21,5 +23,8 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: k8s-playground-service
+        - group: ""
+          kind: Service
+          name: k8s-playground-service
           port: 80
+          weight: 1

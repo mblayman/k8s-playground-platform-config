@@ -26,7 +26,9 @@ spec:
       tls:
         mode: Terminate
         certificateRefs:
-          - name: k8s-playground-user-gateway-tls
+          - group: ""
+            kind: Secret
+            name: k8s-playground-user-gateway-tls
       allowedRoutes:
         namespaces:
           from: All

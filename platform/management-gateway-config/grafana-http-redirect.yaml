@@ -10,11 +10,17 @@ spec:
   hostnames:
     - grafana.k8s-playground.test
   parentRefs:
-    - name: k8s-playground-management-gateway
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: k8s-playground-management-gateway
       namespace: istio-system
       sectionName: http
   rules:
-    - filters:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
         - type: RequestRedirect
           requestRedirect:
             scheme: https

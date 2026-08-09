@@ -10,10 +10,19 @@ spec:
   hostnames:
     - argocd.k8s-playground.test
   parentRefs:
-    - name: k8s-playground-management-gateway
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: k8s-playground-management-gateway
       namespace: istio-system
       sectionName: https
   rules:
-    - backendRefs:
-        - name: argocd-server
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: argocd-server
           port: 80
+          weight: 1
