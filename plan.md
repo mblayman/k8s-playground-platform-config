@@ -13,7 +13,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - LoadBalancer support: MetalLB for kind; cloud-native load balancing for future GCP clusters
 - TLS: cert-manager
 - GitOps: Argo CD
-- Observability: Grafana stack with Alloy, Mimir, Loki, Tempo, Pyroscope, Beyla, and kind-local MinIO object storage
+- Observability: Grafana stack with Alloy, Mimir, Loki, Tempo, Pyroscope, and Beyla
+- Object storage: generic kind-local MinIO substrate; provider object storage in cloud environments
 - Policy: Istio mTLS and AuthorizationPolicy first; Kubernetes NetworkPolicy later
 - Protocols: HTTP/1.1 baseline now; HTTP/2 support planned after observability gives enough mesh visibility
 
@@ -99,8 +100,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added a dedicated Kubernetes `ServiceAccount/k8s-playground-service` and configured the app Deployment to use it so Istio authorization can target the app with a specific workload identity instead of the namespace default service account.
 - Added and live-verified Istio `AuthorizationPolicy/allow-ingress-gateway` for `k8s-playground-service`. The policy selects the app workload and allows only the `cluster.local/ns/istio-system/sa/istio-ingressgateway` principal to reach port `8080`; the gateway path still works, non-meshed plaintext traffic is rejected by mTLS, and a separate meshed curl client receives `RBAC: access denied` with HTTP `403`.
 - Decided to support HTTP/2 as a future protocol-realism track, but not before the current security baseline and observability are in place. The preferred sequence is observability first, then mesh-only HTTP/2 upgrade experiments, then optional end-to-end h2c support in the Go app.
-- Decided the observability track should use a robust Grafana stack rather than Prometheus as the primary collector. The preferred local kind stack is Grafana Alloy for collection, Mimir for metrics, Loki for logs, Tempo for traces, Pyroscope for profiling, Beyla for eBPF-derived telemetry, and MinIO as kind-local object storage backing services that would use real object storage in cloud clusters.
-- Decided observability foundations should be ordered before application workloads in Argo sync waves. The current live cluster is adding observability after the app because the app already exists, but a scratch rebuild should bring MinIO, Mimir, Alloy, Grafana, and core collectors online before app wave `70`.
+- Decided the observability track should use a robust Grafana stack rather than Prometheus as the primary collector. The preferred local kind stack is Grafana Alloy for collection, Mimir for metrics, Loki for logs, Tempo for traces, Pyroscope for profiling, and Beyla for eBPF-derived telemetry. These backends consume generic kind-local MinIO object storage where they would use provider object storage in cloud environments, but MinIO is not part of the observability stack.
+- Decided the fresh kind cluster workflow should reconcile shared, observability, and application roots independently, then wait for all three before generating validation traffic. Within the application root, Alloy should still become healthy before app wave `70`.
 - Started the object-storage foundation by adding an Argo-managed MinIO wrapper chart at `platform/minio`, using the official MinIO chart in kind-friendly standalone mode with a local bootstrap-created root credential Secret. MinIO is generic platform object storage; observability is the first expected consumer but not part of MinIO's component identity.
 - Added desired-state observability bucket bootstrap config under `platform/observability/object-storage-config`. It is a separate wave `20` component that creates the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets in MinIO without making those buckets part of the generic MinIO chart values.
 - Decided to start Mimir with an explicit single tenant, `k8s-playground`, so Alloy writes and Grafana queries model Mimir's real `X-Scope-OrgID` tenancy without creating unnecessary team/app tenant complexity.
@@ -375,7 +376,7 @@ Use Istio AuthorizationPolicy as the first policy layer.
 
 Use explicit Kubernetes service accounts for workloads before writing authorization policies. Istio derives workload identity from namespace and service account, so `k8s-playground-service` should use `cluster.local/ns/k8s-playground-service/sa/k8s-playground-service` instead of sharing `cluster.local/ns/k8s-playground-service/sa/default` with any future pod that might land in the namespace.
 
-App components that contain their own namespace, workload identity, workload, mesh policy, and route should use resource-level sync waves so scratch rebuilds are deterministic:
+App components that contain their own namespace, workload identity, workload, mesh policy, and route should use resource-level sync waves so fresh kind cluster creation is deterministic:
 
 | App Resource Wave | Purpose |
 | ---: | --- |
@@ -466,26 +467,35 @@ Both gateways terminate HTTPS with cert-manager certificates issued by the clust
 
 ### Observability
 
-In the current build, introduce observability after the core platform traffic path is proven. In steady-state Argo ordering, foundational observability should come before application workloads so collectors and metrics storage are already online when apps start.
+In the current build, introduce observability after the core platform traffic path is proven. During fresh kind cluster creation, reconcile all roots independently and wait for them before generating deliberate validation traffic. In steady state, application availability does not depend on observability health.
 
-Use a Grafana-centered stack with Grafana Alloy as the primary collector, not Prometheus as the primary collection path.
+Use a Grafana-centered telemetry system with Grafana Alloy as the primary collector, not Prometheus as the primary collection path.
+
+Backend and UI workloads:
 
 - Grafana
-- Grafana Alloy
 - Mimir
 - Loki
 - Tempo
 - Pyroscope
+
+Application-cluster collectors:
+
+- Grafana Alloy
 - Beyla
-- MinIO for kind-local object storage
+
+MinIO is not an observability component. It is the kind-local implementation of generic platform object storage and can support observability or non-observability consumers. Observability backends use it because object storage is a normal platform capability that would be provided independently by cloud object storage in a production environment.
 
 Do not make observability part of the early success criteria. The main learning path is the incremental addition of platform layers, not deep inspection of a frequently changing app.
 
-This means observability is not required for the first manual tracer bullet, but once Argo manages the platform, observability foundations are platform dependencies rather than late add-ons.
+This means observability is not required for the first manual tracer bullet. Once Argo manages the platform, observability becomes a first-class operational capability, but not a hard runtime dependency of application deployment or request handling.
 
 Local kind storage model:
 
 - Use MinIO as the local object store backing Mimir, Tempo, Loki, and Pyroscope where the charts support object storage.
+- Keep MinIO owned by the shared platform/substrate layer rather than by the logical observability environment.
+- Treat observability buckets, policies, and credentials as consumer-specific provisioning on a generic object-storage service, not as ownership of MinIO itself.
+- Model the portable S3 contract with verified HTTPS and consumer-scoped access credentials; do not rely on same-cluster plaintext merely because the kind implementation is local.
 - Keep MinIO scoped to the kind/local profile only.
 - Use real cloud object storage when this platform moves to cloud clusters.
 - Do not treat MinIO as a production storage decision.
@@ -512,6 +522,79 @@ Namespace model:
 - Revisit separate namespaces for Mimir, Loki, Tempo, Grafana, or other backends when independent ownership, ResourceQuotas, Pod Security levels, NetworkPolicy boundaries, secret policies, lifecycle management, or chargeback justify the extra operational cost.
 - Reevaluate the namespace model when moving observability to a dedicated cluster or splitting Mimir into a production-style distributed deployment.
 
+### Logical Cluster Boundary
+
+Run one physical kind cluster while deliberately modeling three ownership and networking zones:
+
+| Logical zone | Current playground resources | Production analogue |
+| --- | --- | --- |
+| Application cluster | Application workloads, Istio, user/management gateways, Alloy and future cluster-local collectors | Application Kubernetes cluster with a service mesh and local telemetry agents/gateways |
+| Observability cluster stand-in | Mimir, Grafana, future Tempo, Loki, Pyroscope, ruler, and Alertmanager resources in `observability` | Dedicated observability cluster or managed observability platform |
+| Shared platform/substrate | Argo CD, cert-manager, Gateway API foundations, MetalLB for kind, and generic MinIO object storage | Shared platform controllers and cloud/provider services available independently of either workload cluster |
+
+The physical collapse into one kind cluster is an implementation convenience, not an ownership decision. Preserve contracts that could survive moving the observability zone to another cluster:
+
+```text
+application workload
+  -> cluster-local Alloy over transparent Istio mTLS
+  -> native TLS plus explicit authentication across the logical cluster boundary
+  -> observability backend ingest endpoint
+```
+
+Networking rules:
+
+- Mesh application workloads and the Alloy collector because they belong to the logical application cluster.
+- Do not enable Istio injection for the `observability` namespace by default. A dedicated observability cluster may be meshless or use a different networking standard.
+- Use backend-native TLS or a non-Istio authenticated ingest boundary for Alloy-to-Mimir, Alloy-to-Tempo, and future Alloy-to-Loki traffic. `X-Scope-OrgID` selects a tenant but is not authentication.
+- Keep MinIO outside this application-versus-observability mesh decision. Consumers access generic object storage through provider-native credentials and transport security.
+- Use Kubernetes Service DNS as the kind-local stand-in for private cross-cluster DNS, but keep exporter configuration, CA trust, authentication, retries, and timeouts portable to a remote endpoint.
+- Treat Grafana sharing the local Istio management gateway with Argo CD as an explicit playground convenience. In a dedicated observability cluster, Grafana would use that environment's ingress and identity boundary.
+- Do not rely on physical same-cluster reachability as the security model. The desired boundary is workload identity and mTLS inside the application cluster, then native TLS and authentication when telemetry leaves it.
+
+### Argo Ownership Model
+
+Split the current all-in-one kind app-of-apps into three independently reconciled roots before adding Tempo. Preserve the existing `k8s-playground-kind-root` as the shared/substrate root to avoid an unnecessary bootstrap identity change, then add dedicated application-cluster and observability roots.
+
+```text
+k8s-playground-kind-root                  # shared/substrate root
+  -> Argo configuration/repositories, cert-manager, MinIO
+  -> Gateway API foundations and object-storage provisioning
+
+k8s-playground-kind-observability-root    # independently reconciled
+  -> Mimir, Grafana, future Tempo/Loki/Pyroscope/alerting
+
+k8s-playground-kind-application-root      # independently reconciled
+  -> Istio, user/management gateways, Alloy, k8s-playground-service
+```
+
+Ownership rules:
+
+- Keep `minio` in the existing shared root at wave `10`; never make it a child of the observability root.
+- Keep observability bucket/policy/user provisioning in the shared root with the object-storage owner, even though those resources are requested by observability consumers.
+- Move Alloy into the application-cluster root because it represents a collector that remains with applications when backends move elsewhere.
+- Move Mimir and Grafana wiring into the observability root, and add Tempo, Loki, Pyroscope, ruler, and Alertmanager there later.
+- Add an `observability` Argo `AppProject` that restricts child applications to the platform-config source and the `observability` destination namespace. Keep the observability root itself in the parent/default project because it creates child `Application` resources in `argocd`.
+- Preserve existing Application names, Helm release names, namespaces, PVCs, and tracking ownership during the wiring migration to avoid workload recreation.
+- Restore Argo health assessment for child `Application` resources so sync waves inside each root wait for actual child health instead of only creating Application objects. The current Argo installation has no such customization and reports child Application health as `null`.
+- Keep sync-wave contracts local to each root. Waves in separate roots do not globally interleave and must not create a hidden runtime dependency between application and observability environments.
+- Design observability child destinations so changing the observability cluster later does not require moving Alloy, MinIO, Istio, or application wiring.
+
+Fresh kind cluster creation and steady-state runtime have intentionally different contracts:
+
+```text
+fresh kind cluster creation
+  apply/reconcile shared, observability, and application roots independently
+  wait until all three roots are Healthy
+  generate smoke-test/application traffic
+
+steady-state runtime contract
+  application and observability roots reconcile independently
+  application remains available when observability is unavailable
+  Alloy retries/buffers bounded exports across the boundary
+```
+
+Implement the fresh-cluster behavior in `cluster:create`/Argo tasks by applying all three roots without making the application root wait on observability, then explicitly waiting for every root before generating traffic. Do not attempt to express cross-root runtime ordering with sync waves. Within the application root, use restored child Application health plus local waves to enforce `istiod -> Istio CNI -> Alloy -> application` readiness.
+
 Mimir tenancy model:
 
 - Use one explicit initial tenant: `k8s-playground`.
@@ -534,18 +617,19 @@ Recommended sequence:
 - Install kind-local MinIO early as foundational platform storage. It does not depend on Istio and should be one of the first Argo-managed platform apps after Argo repository prerequisites; it does not need to be installed before Argo unless a future bootstrap dependency requires that.
 - Create object-storage buckets/credentials needed by Grafana backends without committing plaintext Secrets.
 - Install Mimir first because metrics are the highest-priority signal.
-- Install Alloy for Kubernetes and node metrics collection, starting with a DaemonSet and adding a gateway Deployment only when needed.
+- Install Alloy for Kubernetes and node metrics collection, starting with a DaemonSet. Reuse its ClusterIP Service as the first application OTLP receiver and add a separate gateway Deployment only when independent scaling, buffering, or policy boundaries justify it.
 - Install Grafana with declarative datasources and dashboards.
-- Expose Grafana through a `Service` of type `LoadBalancer` using MetalLB, not port-forwarding.
+- Expose Grafana through the dedicated Istio management Gateway while keeping its Service internal as `ClusterIP`.
 - Configure Grafana authentication from the start. For local kind, generate or inject credentials as a Kubernetes Secret outside plaintext Git; evaluate SSO/OIDC later for cloud clusters.
+- Instrument the existing `k8s-playground-service` with bounded-cardinality OTLP metrics and traces, initially accepting that a one-service trace is sufficient to validate ingestion, storage, and querying without adding another application service.
+- Install Tempo after the metrics path is working and route application traces from the existing Alloy DaemonSet to Tempo.
+- Provision the Tempo Grafana datasource and validate single-service trace search, timing, status, and metric exemplars before expanding the application topology.
+- Install Loki and configure Alloy to read Kubernetes stdout/stderr directly.
 - Start the single-replica kind deployment with Grafana's SQLite database on a PVC, then migrate Grafana metadata to PostgreSQL before enabling multiple replicas or treating the deployment as highly available. Use a dedicated database and database user rather than sharing an application schema.
 - Add Keycloak in a later identity-focused phase as a local OAuth 2.0/OIDC provider, then migrate Grafana human login from local accounts to generic OAuth/OIDC with explicit group or claim-to-role mapping. Keep a controlled local administrator account for break-glass access.
-- Install Loki and configure Alloy to read Kubernetes stdout/stderr directly.
 - Install Pyroscope for profiling data.
 - Evaluate Beyla for eBPF-derived service telemetry and profiling-adjacent signals without requiring immediate app code changes.
-- Install Tempo after the metrics path is working.
-- Wire Istio traces and any app OTLP traces to Alloy or the chosen collector endpoint.
-- Add explicit application OTLP metrics/traces only after Kubernetes and node collection is stable. For steady-state rebuilds, Alloy and the core telemetry backends should already be online before application workloads sync.
+- Wire Istio-generated traces to Alloy after the application OTLP trace path is proven.
 - Consider Kiali later if it adds useful mesh topology beyond what Grafana, Tempo, Mimir, Loki, Beyla, and Istio telemetry already provide.
 
 Initial dashboards:
@@ -595,7 +679,7 @@ The current app path may stay HTTP/1.1 while the platform adds observability. Th
 
 Preferred sequence:
 
-- Install and validate the Grafana stack first, starting with MinIO, Mimir, Alloy, Grafana, and Kubernetes/node metrics.
+- Install generic object storage independently, then install and validate the Grafana stack starting with Mimir, Alloy, Grafana, and Kubernetes/node metrics.
 - Use observability to capture the baseline HTTP/1.1 mesh path.
 - Experiment with ingress-gateway-to-app-sidecar HTTP/2 over Istio mTLS using an Istio `DestinationRule`, likely starting with `connectionPool.http.h2UpgradePolicy: UPGRADE` for `k8s-playground-service`.
 - Verify protocol behavior through Envoy/Istio telemetry before making the change a default pattern.
@@ -648,13 +732,13 @@ Current wave structure:
 | `5` | Argo CD repository/config prerequisites needed before Helm-backed wrapper apps, such as public Helm repository Secrets. |
 | `10` | Core platform foundations that do not depend on Istio, such as cert-manager and kind-local object storage with MinIO. |
 | `20` | Configuration consumed by core foundations, such as cert-manager issuers/certificates and MinIO buckets or backend object-storage credentials. |
-| `25` | Core observability metrics storage that should exist before workloads, starting with Mimir. |
-| `30` | Platform API foundations and telemetry agents that depend on earlier storage backends, currently Istio base APIs and Alloy Kubernetes/node metrics collection. |
+| `25` | Core observability backend storage inside the observability root, starting with Mimir. |
+| `30` | Platform API foundations that do not yet require a running Istio control plane, currently Istio base APIs. |
 | `35` | Management and observability UI runtime configuration, including Argo CD server settings and Grafana backed by Mimir. |
 | `40` | Istio control plane runtime, currently `istiod` with revision `stable`. |
 | `45` | Istio CNI node agent, installed after `istiod` and before meshed workloads. |
 | `50` | Istio user and management ingress gateway data-plane components. |
-| `55` | Additional telemetry layers that should be available before app workloads where practical, such as Loki log collection, Pyroscope, Tempo, and Beyla. |
+| `55` | Meshed application-cluster collectors after Istio CNI, plus additional telemetry layers inside the observability root such as Loki, Pyroscope, Tempo, and Beyla. |
 | `60` | Platform-owned mesh, ingress, and telemetry integration configuration, including user and management Gateways, certificates, routes, namespace-level mesh defaults, and Istio-to-collector settings. |
 | `70` | Application components, including workloads, services, and app-owned routes when internal resource ordering is sufficient. |
 | `80` | Dashboards, alerting configuration, and other late visualization or operations resources that can reference app-specific signals. |
@@ -666,10 +750,16 @@ Guardrails:
 - Put resources that depend on a CRD in a later wave than the CRD owner.
 - Put resources that depend on an admission webhook in a later wave than the controller serving that webhook.
 - Treat non-Git Secrets required before a Helm app starts as bootstrap inputs, not ordinary later-wave configuration. For example, a MinIO `existingSecret` must be created by local bootstrap before the MinIO app syncs.
-- Keep foundational observability before application wave `70` so metrics/log collectors are already online when workloads start during a scratch rebuild.
+- Keep MinIO and consumer-specific object-storage provisioning outside the observability app-of-apps. Object storage is shared substrate even when the current consumers are observability backends.
+- Install meshed Alloy collectors after `istiod` and Istio CNI rather than at the earlier wave `30` used by their current unmeshed deployment.
+- During fresh kind cluster creation, apply all three roots independently and wait for all of them before generating deliberate validation traffic.
+- Do not block application root reconciliation, application availability, or deployment on the health of the independently reconciled observability root.
+- Within the application root, keep the meshed Alloy collector before application wave `70` and require application exporters to remain non-blocking when telemetry is unavailable.
 - Keep app-specific dashboards and alert rules after application wave `70` when they depend on labels, routes, or service names from app components.
 - Prefer resource-level sync waves inside an app component before splitting app-owned resources into separate child apps.
 - Avoid adding new sync wave numbers unless the dependency cannot fit an existing band.
+
+The wave numbers are reused within the shared, application, and observability roots, but they are not a claim that resources in separate Argo roots globally interleave. The fresh-cluster workflow waits for all independently reconciling roots before validation traffic, and cross-boundary clients must retry while remote-style backends become ready.
 
 Istio's chart defaults validating webhooks to `failurePolicy: Ignore` to avoid bootstrap deadlocks while `istiod` is not yet reachable. This platform declares `failurePolicy: Fail` because the desired steady-state posture is fail-closed validation. The rebuildability guardrail is ordering: Istio resources must not be created until after the Istio control plane wave is healthy.
 
@@ -696,6 +786,8 @@ apps/
 platform/
   cert-manager/
   cert-manager-config/
+  collectors/
+    alloy/
   gateway-api-config/
   management-gateway-config/
   istio/
@@ -704,7 +796,12 @@ platform/
     cni/
     ingressgateway/
     managementgateway/
+  object-storage/
+    consumers/
+      observability/
   observability/
+    grafana/
+    mimir/
 
 scripts/
   manage-kind-hosts.rb
@@ -718,11 +815,33 @@ Argo CD application definitions live in a separate repo named `k8s-playground-ar
 k8s-playground-argocd-apps/
   clusters/
     kind/
-      application.yaml
+      application.yaml                  # existing shared/substrate root
+      application-cluster.yaml          # application-cluster root
+      observability.yaml                # observability root
       apps/
+        argocd-config.yaml
+        argocd-repositories.yaml
+        cert-manager.yaml
         cert-manager-config.yaml
-        gateway-api-config.yaml
-        k8s-playground-service.yaml
+        gateway-api-crds.yaml
+        minio.yaml
+        observability-object-storage-config.yaml
+      application/
+        apps/
+          gateway-api-config.yaml
+          istio-base.yaml
+          istiod.yaml
+          istio-cni.yaml
+          istio-ingressgateway.yaml
+          istio-managementgateway.yaml
+          alloy.yaml
+          gateway-api-config.yaml
+          management-gateway-config.yaml
+          k8s-playground-service.yaml
+      observability/
+        apps/
+          mimir.yaml
+          grafana.yaml
   components/
     platform/
 ```
@@ -755,7 +874,7 @@ k8s-playground-argocd-apps/
 - [x] Remove temporary direct LoadBalancer exposure from `k8s-playground-service` after the Gateway API path remains stable.
 - [x] Create or update the app namespace with revision-based sidecar injection.
 - [x] Push, sync, and live-verify strict mTLS for the app namespace.
-- [x] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for scratch rebuild ordering.
+- [x] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for fresh-cluster ordering.
 - [x] Push, sync, and live-verify ingress-gateway-only AuthorizationPolicy for the app workload.
 - [x] Validate external routing, sidecar injection, mTLS, and authorization.
 - [x] Prepare Argo-managed observability wiring and wrapper charts for the Grafana stack, using waves below app wave `70` for foundational storage, backends, collectors, and Grafana.
@@ -775,14 +894,30 @@ k8s-playground-argocd-apps/
 - [x] Add cert-manager-backed HTTPS host routing for `app.k8s-playground.test`, `argocd.k8s-playground.test`, and `grafana.k8s-playground.test`.
 - [x] Validate safe `/etc/hosts` check and sync against live Gateway IPs, with automated stale-IP replacement, conflict detection, and managed-block removal tests.
 - [x] Return Argo CD and Grafana Services to `ClusterIP` after their management-gateway routes are healthy, then remove the temporary direct Argo CD LoadBalancer bootstrap customization.
+- [x] Document the one-physical-cluster/three-logical-zone model: application cluster, observability cluster stand-in, and shared platform/substrate with generic MinIO object storage.
+- [ ] Add Argo `Application` resource health customization, verify child health is no longer `null`, and prove that local sync waves wait for child Application health before advancing.
+- [ ] Split the current kind app-of-apps into the existing shared/substrate root plus independent `k8s-playground-kind-observability-root` and `k8s-playground-kind-application-root` Applications.
+- [ ] Add a restricted `observability` Argo `AppProject`; move only Mimir and Grafana wiring into the observability root while preserving their Application names, tracking, namespaces, and live resources.
+- [ ] Move Istio, gateway configuration, Alloy, and `k8s-playground-service` wiring into the application root while preserving existing Application and Helm release identities.
+- [ ] Replace the single-root workflow with independent shared-root, observability-root, and application-root reconciliation; wait for all three roots before generating smoke-test traffic without delaying application-root reconciliation on observability health.
+- [ ] Keep MinIO and `observability-object-storage-config` top-level, then move the latter desired-state path from `platform/observability/object-storage-config` to a generic consumer-provisioning path under `platform/object-storage/consumers/observability`.
+- [ ] Give the generic MinIO service a provider-like HTTPS contract using cert-manager, retain scoped S3 credentials as the authorization mechanism, and update the provisioning Job and Mimir client to verify the server certificate rather than use plaintext object-storage transport.
+- [ ] Move Alloy desired state from `platform/observability/alloy` to `platform/collectors/alloy` while preserving the `alloy` Application name, Helm release name, namespace, and live resources.
+- [ ] Move Alloy from wave `30` to wave `55`, enable selective revision-based Istio injection after Istio CNI, and verify that all kubelet/cAdvisor targets remain healthy through the sidecar.
+- [ ] Expose Alloy's OTLP/HTTP receiver on internal port `4318`, require strict mTLS, and allow ingestion only from explicitly approved application-cluster ServiceAccounts.
+- [ ] Establish the reusable logical cross-cluster transport on the existing Alloy-to-Mimir path: a dedicated native-TLS ingest endpoint, real caller authentication independent of `X-Scope-OrgID`, explicit CA trust, and bounded retry/timeout behavior.
+- [ ] Verify the new separation end to end: observability backends remain unmeshed, MinIO remains generic/shared, Alloy survives rollout and mesh repair, Mimir still receives all node metrics, and all three Argo roots rebuild and settle without resource recreation.
+- [ ] Verify runtime independence by making the observability root or Mimir temporarily unavailable: the application remains healthy, OTLP export stays non-blocking, and Alloy exhibits bounded retry/buffering behavior until the backend recovers.
+- [ ] Instrument the existing `k8s-playground-service` with bounded-cardinality OTLP metrics and single-service traces, excluding probe noise and sensitive request data.
+- [ ] Install Tempo with dedicated least-privilege access to the existing MinIO `tempo` bucket and explicit tenant `k8s-playground`.
+- [ ] Configure Alloy's application OTLP pipelines to route metrics through the authenticated Mimir ingest boundary and traces through the native-TLS Tempo ingest boundary without duplicate telemetry.
+- [ ] Provision Grafana's Tempo datasource and validate single-service trace search, timing, status, persistence, and metric-to-trace exemplars.
+- [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
 - [ ] Migrate Grafana from SQLite on a local PVC to PostgreSQL before adding replicas or claiming production-style high availability.
 - [ ] Install Keycloak in a later identity-learning phase and integrate Grafana through generic OAuth/OIDC with explicit role mapping and a tested break-glass login path.
-- [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
 - [ ] Install Pyroscope for profiling.
 - [ ] Evaluate and, if useful, install Beyla for eBPF-derived telemetry.
-- [ ] Install Tempo after the metrics path is working.
-- [ ] Wire Istio and app trace export to Alloy or the chosen collector endpoint.
-- [ ] Add app OTLP metrics/traces only after Kubernetes and node collection is stable.
+- [ ] Wire Istio-generated trace export to Alloy after the application trace path is proven.
 - [ ] Design alerting around Mimir ruler plus Alertmanager before treating dashboards as operational coverage.
 - [ ] Add initial Git-managed platform alert rules and Alertmanager routing/silence strategy without committing sensitive receiver credentials.
 - [ ] Validate observability after the platform traffic path is already working.
@@ -825,21 +960,36 @@ k8s-playground-argocd-apps/
 - Explicit AuthorizationPolicy allows intended ingress traffic.
 - The app is reachable through the Gateway API route after the Istio migration.
 - MinIO is available as the kind-local object storage backend for observability services that need object storage.
+- MinIO remains a top-level shared platform application and is not owned by the observability app-of-apps; its non-observability consumers can use the same generic service model.
+- Consumer-specific observability buckets, policies, and credentials are provisioned through the shared object-storage ownership path without moving MinIO into the observability boundary.
+- MinIO exposes a verified HTTPS S3 endpoint as generic shared substrate, and its observability consumers continue to use bucket-scoped credentials rather than root credentials.
+- The existing kind root owns only shared substrate, while independent application and observability roots own their respective movable components.
+- Argo reports real child `Application` health, and sync waves inside the application root wait for `istiod`, Istio CNI, and Alloy health before application workloads advance.
+- Fresh kind cluster creation reconciles all three roots independently and waits for all of them before generating validation traffic; steady-state reconciliation has no cross-root health dependency.
+- The `observability` AppProject restricts central backend applications to the intended source repository and `observability` destination namespace.
+- Migrating Mimir and Grafana wiring into the observability root does not recreate their Deployments, Services, Secrets, or PVCs.
+- Migrating Istio, Alloy, gateways, and application wiring into the application root does not recreate their live resources.
 - Mimir uses explicit tenant `k8s-playground` for the initial local playground metrics path.
 - Mimir starts in single-binary mode for kind while still using MinIO object storage.
 - Mimir receives Kubernetes and node metrics collected through Alloy for tenant `k8s-playground`.
 - Backend/UI workloads remain in `observability`, privileged node/eBPF collectors run in `observability-collectors`, and generic object storage remains in `minio`.
+- Backend/UI workloads in `observability` remain unmeshed by default so they model a potentially meshless dedicated observability cluster.
 - Alloy runs one ready DaemonSet pod on each kind node and each pod discovers only its own node.
-- Alloy can scrape its local kubelet and cAdvisor endpoints without TLS-validation, authentication, RBAC, or duplicate-series errors.
+- Alloy can scrape its local kubelet and cAdvisor endpoints with verified TLS, bearer-token authentication, minimal RBAC, and no duplicate-series errors.
+- The existing Alloy DaemonSet accepts application OTLP through its ClusterIP Service without duplicating metrics or traces across Alloy pods.
+- Alloy runs as a selectively meshed application-cluster collector after Istio CNI, requires strict mTLS on OTLP port `4318`, and authorizes only approved application identities.
+- Alloy uses native TLS and real caller authentication, not only a tenant-routing header, when exporting across the logical application-to-observability cluster boundary.
 - Mimir queries for tenant `k8s-playground` return healthy `up` series for `job="kubelet"` and `job="cadvisor"` from all three nodes.
-- On a scratch rebuild, Mimir and Alloy are healthy before application wave `70` syncs workloads.
-- Grafana is reachable through a MetalLB external IP and requires authentication.
+- On fresh kind cluster creation, all roots reconcile independently and reach health before validation traffic is generated; Alloy is healthy inside the application root before application wave `70` advances.
+- During an observability outage, the application remains healthy and Alloy retries/buffers exports without making application requests depend on telemetry delivery.
+- Grafana is reachable through the dedicated Istio management Gateway and requires authentication.
 - Grafana datasources are provisioned declaratively for installed backends.
 - Loki receives Kubernetes container stdout/stderr logs collected directly by Alloy.
 - Pyroscope is available for profiling data.
 - Beyla is evaluated for eBPF-derived telemetry and enabled only if it adds useful local signal with acceptable complexity.
-- Tempo receives traces after the metrics path is working.
-- App-specific OTLP metrics/traces are added only after Kubernetes and node telemetry are stable.
+- The existing application emits bounded-cardinality OTLP metrics and single-service traces without recording probe noise, request bodies, credentials, or other sensitive data.
+- Tempo stores application traces in MinIO for tenant `k8s-playground`, and Grafana can query traces across a Tempo pod restart.
+- Grafana links application metric exemplars to their corresponding Tempo traces.
 - Mimir ruler and Alertmanager are the primary alerting path for platform alerts.
 - Alerting ownership, Git-managed rule location, Alertmanager routing, silence strategy, and notification targets are documented before alerts are considered complete.
 - HTTP/1.1 baseline protocol behavior is visible before HTTP/2 changes are introduced.
@@ -911,11 +1061,17 @@ Later app resources after Istio is introduced:
 - Create `k8s-playground-argocd-apps` when it is time to introduce Argo CD.
 - Do not store Argo CD `Application` definitions temporarily in this platform-config repo.
 - For the current live cluster, retrofit observability after the core app, MetalLB, Argo CD, Istio, Gateway API, mTLS, and authorization path is working.
-- For scratch rebuilds, order foundational observability before application workloads so storage, metrics, collectors, and Grafana are already online before app wave `70`.
+- For fresh kind cluster creation, reconcile all three roots independently and wait for all of them before generating traffic; in steady state, keep application and observability reconciliation independent.
 - Build observability around Grafana Alloy, Mimir, Loki, Tempo, Pyroscope, Beyla, and Grafana rather than a Prometheus-first collection model.
 - Install Mimir and Kubernetes/node metrics before Tempo and app-specific telemetry because metrics are the higher-priority initial signal.
 - Collect logs directly from Kubernetes stdout/stderr rather than using OTLP logs by default.
-- Use MinIO only as kind-local object storage for observability backends; use real object storage for future cloud clusters.
+- Treat MinIO as generic kind-local platform object storage, not as part of the observability stack or logical observability cluster; use provider object storage for future cloud environments.
+- Model an application cluster, an observability cluster stand-in, and shared platform/substrate as separate logical ownership zones inside the one physical kind cluster.
+- Use three independently reconciled Argo app-of-apps roots for shared substrate, the application cluster, and the observability cluster stand-in; preserve the existing kind root identity for shared/bootstrap ownership.
+- Restore child `Application` health assessment so sync waves enforce readiness inside a root, but never use cross-root waves as a runtime dependency.
+- Keep Alloy and other cluster-local collectors with the application root, but place Mimir, Grafana, and future Tempo/Loki/Pyroscope/alerting under the observability root.
+- Keep central observability backends unmeshed by default and use native TLS plus real authentication for telemetry crossing from the meshed application-cluster collector boundary.
+- Keep MinIO, cert-manager, and other generic platform dependencies outside both the application and observability app ownership trees where their capabilities are shared.
 - Expose Grafana with configured authentication through the dedicated management Gateway, not port-forwarding or a steady-state direct LoadBalancer Service.
 - Support HTTP/2 later, after observability is installed, starting with a reversible mesh-only experiment before changing the Go app to support h2c.
 - Pin the tracer-bullet app image to `mblayman/k8s-playground-service:0.1.0` instead of `latest`.
