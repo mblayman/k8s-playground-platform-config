@@ -101,7 +101,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added and live-verified Istio `AuthorizationPolicy/allow-ingress-gateway` for `k8s-playground-service`. The policy selects the app workload and allows only the `cluster.local/ns/istio-system/sa/istio-ingressgateway` principal to reach port `8080`; the gateway path still works, non-meshed plaintext traffic is rejected by mTLS, and a separate meshed curl client receives `RBAC: access denied` with HTTP `403`.
 - Decided to support HTTP/2 as a future protocol-realism track, but not before the current security baseline and observability are in place. The preferred sequence is observability first, then mesh-only HTTP/2 upgrade experiments, then optional end-to-end h2c support in the Go app.
 - Decided the observability track should use a robust Grafana stack rather than Prometheus as the primary collector. The preferred local kind stack is Grafana Alloy for collection, Mimir for metrics, Loki for logs, Tempo for traces, Pyroscope for profiling, and Beyla for eBPF-derived telemetry. These backends consume generic kind-local MinIO object storage where they would use provider object storage in cloud environments, but MinIO is not part of the observability stack.
-- Decided the fresh kind cluster workflow should reconcile shared, observability, and application roots independently, then wait for all three before generating validation traffic. Within the application root, Alloy should still become healthy before app wave `70`.
+- Decided the fresh kind cluster workflow should reconcile shared, observability, and application roots independently, then wait for all three to converge before generating validation traffic. Child Application waves provide coarse creation order but do not impose parent-driven readiness dependencies.
 - Started the object-storage foundation by adding an Argo-managed MinIO wrapper chart at `platform/minio`, using the official MinIO chart in kind-friendly standalone mode with a local bootstrap-created root credential Secret. MinIO is generic platform object storage; observability is the first expected consumer but not part of MinIO's component identity.
 - Added desired-state observability bucket bootstrap config under `platform/observability/object-storage-config`. It is a separate wave `20` component that creates the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets in MinIO without making those buckets part of the generic MinIO chart values.
 - Decided to start Mimir with an explicit single tenant, `k8s-playground`, so Alloy writes and Grafana queries model Mimir's real `X-Scope-OrgID` tenancy without creating unnecessary team/app tenant complexity.
@@ -575,8 +575,10 @@ Ownership rules:
 - Move Mimir and Grafana wiring into the observability root, and add Tempo, Loki, Pyroscope, ruler, and Alertmanager there later.
 - Add an `observability` Argo `AppProject` that restricts child applications to the platform-config source and the `observability` destination namespace. Keep the observability root itself in the parent/default project because it creates child `Application` resources in `argocd`.
 - Preserve existing Application names, Helm release names, namespaces, PVCs, and tracking ownership during the wiring migration to avoid workload recreation.
-- Restore Argo health assessment for child `Application` resources so sync waves inside each root wait for actual child health instead of only creating Application objects. The current Argo installation has no such customization and reports child Application health as `null`.
-- Keep sync-wave contracts local to each root. Waves in separate roots do not globally interleave and must not create a hidden runtime dependency between application and observability environments.
+- Preserve Argo's default child `Application` health behavior. Parent Applications declare desired child Applications; each child reconciles its own resources independently and reports its own sync/health state.
+- Treat waves on child `Application` manifests as coarse creation order, not as a readiness DAG. Keep true resource dependencies within one Application when health-gated resource waves are required.
+- Give automated child Applications explicit bounded retry/backoff policies where an earlier dependency may not yet be ready, and make hooks/controllers idempotent so repeated reconciliation is safe.
+- Keep sync-wave contracts local to each Application. Waves in separate roots do not globally interleave and must not create a hidden runtime dependency between application and observability environments.
 - Design observability child destinations so changing the observability cluster later does not require moving Alloy, MinIO, Istio, or application wiring.
 
 Fresh kind cluster creation and steady-state runtime have intentionally different contracts:
@@ -593,7 +595,7 @@ steady-state runtime contract
   Alloy retries/buffers bounded exports across the boundary
 ```
 
-Implement the fresh-cluster behavior in `cluster:create`/Argo tasks by applying all three roots without making the application root wait on observability, then explicitly waiting for every root before generating traffic. Do not attempt to express cross-root runtime ordering with sync waves. Within the application root, use restored child Application health plus local waves to enforce `istiod -> Istio CNI -> Alloy -> application` readiness.
+Implement the fresh-cluster behavior in `cluster:create`/Argo tasks by applying all three roots, allowing their child Applications to reconcile independently, and waiting for every child to become `Synced` and `Healthy` before generating traffic. Do not attempt to express cross-root or cross-child readiness ordering with parent waves. Use resource-level waves inside a child Application only when resources share a real lifecycle dependency, and rely on retries/readiness for dependencies between Applications.
 
 Mimir tenancy model:
 
@@ -746,15 +748,16 @@ Current wave structure:
 Guardrails:
 
 - Keep Istio validation fail-closed in steady state with `failurePolicy: Fail`.
-- Do not create Istio custom resources before wave `40` has installed a healthy `istiod`.
-- Put resources that depend on a CRD in a later wave than the CRD owner.
-- Put resources that depend on an admission webhook in a later wave than the controller serving that webhook.
+- Keep CRD owners and admission controllers in earlier child-Application waves than their consumers, while recognizing that these waves order Application creation rather than child readiness.
+- Configure consumers of not-yet-established CRDs/webhooks to retry safely; use `SkipDryRunOnMissingResource=true` only where the CRD lifecycle makes it necessary and understood.
+- Keep hard resource ordering inside one Application when retrying across independently reconciled Applications would be unsafe.
 - Treat non-Git Secrets required before a Helm app starts as bootstrap inputs, not ordinary later-wave configuration. For example, a MinIO `existingSecret` must be created by local bootstrap before the MinIO app syncs.
 - Keep MinIO and consumer-specific object-storage provisioning outside the observability app-of-apps. Object storage is shared substrate even when the current consumers are observability backends.
-- Install meshed Alloy collectors after `istiod` and Istio CNI rather than at the earlier wave `30` used by their current unmeshed deployment.
+- Create meshed Alloy after the lower-wave `istiod` and Istio CNI Applications, but rely on safe reconciliation and Istio CNI repair rather than parent Application health gating.
 - During fresh kind cluster creation, apply all three roots independently and wait for all of them before generating deliberate validation traffic.
 - Do not block application root reconciliation, application availability, or deployment on the health of the independently reconciled observability root.
-- Within the application root, keep the meshed Alloy collector before application wave `70` and require application exporters to remain non-blocking when telemetry is unavailable.
+- Within the application root, create the meshed Alloy Application before application wave `70`, without making application availability depend on collector readiness; application exporters must remain non-blocking when telemetry is unavailable.
+- Give child Applications bounded automated sync retries with observable failure after exhaustion instead of relying on parent health propagation.
 - Keep app-specific dashboards and alert rules after application wave `70` when they depend on labels, routes, or service names from app components.
 - Prefer resource-level sync waves inside an app component before splitting app-owned resources into separate child apps.
 - Avoid adding new sync wave numbers unless the dependency cannot fit an existing band.
@@ -895,7 +898,7 @@ k8s-playground-argocd-apps/
 - [x] Validate safe `/etc/hosts` check and sync against live Gateway IPs, with automated stale-IP replacement, conflict detection, and managed-block removal tests.
 - [x] Return Argo CD and Grafana Services to `ClusterIP` after their management-gateway routes are healthy, then remove the temporary direct Argo CD LoadBalancer bootstrap customization.
 - [x] Document the one-physical-cluster/three-logical-zone model: application cluster, observability cluster stand-in, and shared platform/substrate with generic MinIO object storage.
-- [ ] Add Argo `Application` resource health customization, verify child health is no longer `null`, and prove that local sync waves wait for child Application health before advancing.
+- [ ] Standardize bounded automated sync retry/backoff on child Applications and validate that temporarily unavailable CRDs, webhooks, or backend Services converge without parent health customization or manual sync.
 - [ ] Split the current kind app-of-apps into the existing shared/substrate root plus independent `k8s-playground-kind-observability-root` and `k8s-playground-kind-application-root` Applications.
 - [ ] Add a restricted `observability` Argo `AppProject`; move only Mimir and Grafana wiring into the observability root while preserving their Application names, tracking, namespaces, and live resources.
 - [ ] Move Istio, gateway configuration, Alloy, and `k8s-playground-service` wiring into the application root while preserving existing Application and Helm release identities.
@@ -903,7 +906,7 @@ k8s-playground-argocd-apps/
 - [ ] Keep MinIO and `observability-object-storage-config` top-level, then move the latter desired-state path from `platform/observability/object-storage-config` to a generic consumer-provisioning path under `platform/object-storage/consumers/observability`.
 - [ ] Give the generic MinIO service a provider-like HTTPS contract using cert-manager, retain scoped S3 credentials as the authorization mechanism, and update the provisioning Job and Mimir client to verify the server certificate rather than use plaintext object-storage transport.
 - [ ] Move Alloy desired state from `platform/observability/alloy` to `platform/collectors/alloy` while preserving the `alloy` Application name, Helm release name, namespace, and live resources.
-- [ ] Move Alloy from wave `30` to wave `55`, enable selective revision-based Istio injection after Istio CNI, and verify that all kubelet/cAdvisor targets remain healthy through the sidecar.
+- [ ] Move Alloy from wave `30` to wave `55`, enable selective revision-based Istio injection, and verify that it eventually converges after Istio CNI and retains all healthy kubelet/cAdvisor targets through the sidecar.
 - [ ] Expose Alloy's OTLP/HTTP receiver on internal port `4318`, require strict mTLS, and allow ingestion only from explicitly approved application-cluster ServiceAccounts.
 - [ ] Establish the reusable logical cross-cluster transport on the existing Alloy-to-Mimir path: a dedicated native-TLS ingest endpoint, real caller authentication independent of `X-Scope-OrgID`, explicit CA trust, and bounded retry/timeout behavior.
 - [ ] Verify the new separation end to end: observability backends remain unmeshed, MinIO remains generic/shared, Alloy survives rollout and mesh repair, Mimir still receives all node metrics, and all three Argo roots rebuild and settle without resource recreation.
@@ -964,7 +967,8 @@ k8s-playground-argocd-apps/
 - Consumer-specific observability buckets, policies, and credentials are provisioned through the shared object-storage ownership path without moving MinIO into the observability boundary.
 - MinIO exposes a verified HTTPS S3 endpoint as generic shared substrate, and its observability consumers continue to use bucket-scoped credentials rather than root credentials.
 - The existing kind root owns only shared substrate, while independent application and observability roots own their respective movable components.
-- Argo reports real child `Application` health, and sync waves inside the application root wait for `istiod`, Istio CNI, and Alloy health before application workloads advance.
+- Each Argo root uses default app-of-apps behavior: child Applications reconcile independently, expose their own sync/health state, and eventually converge without parent health customization.
+- Child Applications recover automatically from deliberately introduced temporary dependency failures using bounded retry/backoff, while exhausted retries remain visible and actionable.
 - Fresh kind cluster creation reconciles all three roots independently and waits for all of them before generating validation traffic; steady-state reconciliation has no cross-root health dependency.
 - The `observability` AppProject restricts central backend applications to the intended source repository and `observability` destination namespace.
 - Migrating Mimir and Grafana wiring into the observability root does not recreate their Deployments, Services, Secrets, or PVCs.
@@ -980,7 +984,7 @@ k8s-playground-argocd-apps/
 - Alloy runs as a selectively meshed application-cluster collector after Istio CNI, requires strict mTLS on OTLP port `4318`, and authorizes only approved application identities.
 - Alloy uses native TLS and real caller authentication, not only a tenant-routing header, when exporting across the logical application-to-observability cluster boundary.
 - Mimir queries for tenant `k8s-playground` return healthy `up` series for `job="kubelet"` and `job="cadvisor"` from all three nodes.
-- On fresh kind cluster creation, all roots reconcile independently and reach health before validation traffic is generated; Alloy is healthy inside the application root before application wave `70` advances.
+- On fresh kind cluster creation, all roots and child Applications reconcile independently and eventually become healthy before validation traffic is generated; no parent wave claims child readiness ordering.
 - During an observability outage, the application remains healthy and Alloy retries/buffers exports without making application requests depend on telemetry delivery.
 - Grafana is reachable through the dedicated Istio management Gateway and requires authentication.
 - Grafana datasources are provisioned declaratively for installed backends.
@@ -1068,7 +1072,7 @@ Later app resources after Istio is introduced:
 - Treat MinIO as generic kind-local platform object storage, not as part of the observability stack or logical observability cluster; use provider object storage for future cloud environments.
 - Model an application cluster, an observability cluster stand-in, and shared platform/substrate as separate logical ownership zones inside the one physical kind cluster.
 - Use three independently reconciled Argo app-of-apps roots for shared substrate, the application cluster, and the observability cluster stand-in; preserve the existing kind root identity for shared/bootstrap ownership.
-- Restore child `Application` health assessment so sync waves enforce readiness inside a root, but never use cross-root waves as a runtime dependency.
+- Preserve Argo's default Application health semantics: roots declare independently reconciling children, child waves provide coarse creation order, and retries/readiness produce eventual convergence without parent health customization.
 - Keep Alloy and other cluster-local collectors with the application root, but place Mimir, Grafana, and future Tempo/Loki/Pyroscope/alerting under the observability root.
 - Keep central observability backends unmeshed by default and use native TLS plus real authentication for telemetry crossing from the meshed application-cluster collector boundary.
 - Keep MinIO, cert-manager, and other generic platform dependencies outside both the application and observability app ownership trees where their capabilities are shared.
