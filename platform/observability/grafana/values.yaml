@@ -23,7 +23,7 @@ grafana:
     passwordKey: admin-password
 
   service:
-    type: LoadBalancer
+    type: ClusterIP
     port: 80
     targetPort: 3000
     appProtocol: http
@@ -115,7 +115,13 @@ grafana:
       auto_assign_org_role: Viewer
     security:
       disable_gravatar: true
+      cookie_secure: true
       cookie_samesite: strict
+    server:
+      domain: grafana.k8s-playground.test
+      root_url: https://grafana.k8s-playground.test/
+    plugins:
+      preinstall_disabled: true
     log:
       mode: console
 

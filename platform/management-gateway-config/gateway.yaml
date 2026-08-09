@@ -1,32 +1,32 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: k8s-playground-gateway
+  name: k8s-playground-management-gateway
   namespace: istio-system
   labels:
-    app.kubernetes.io/name: k8s-playground-gateway
+    app.kubernetes.io/name: k8s-playground-management-gateway
     app.kubernetes.io/part-of: k8s-playground
 spec:
   gatewayClassName: istio
   addresses:
     - type: Hostname
-      value: istio-ingressgateway.istio-system.svc.cluster.local
+      value: istio-managementgateway.istio-system.svc.cluster.local
   listeners:
     - name: http
-      hostname: app.k8s-playground.test
+      hostname: "*.k8s-playground.test"
       port: 80
       protocol: HTTP
       allowedRoutes:
         namespaces:
           from: All
     - name: https
-      hostname: app.k8s-playground.test
+      hostname: "*.k8s-playground.test"
       port: 443
       protocol: HTTPS
       tls:
         mode: Terminate
         certificateRefs:
-          - name: k8s-playground-user-gateway-tls
+          - name: k8s-playground-management-gateway-tls
       allowedRoutes:
         namespaces:
           from: All

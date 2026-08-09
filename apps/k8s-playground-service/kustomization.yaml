@@ -8,3 +8,4 @@ resources:
   - peerauthentication.yaml
   - authorizationpolicy.yaml
   - httproute.yaml
+  - http-redirect.yaml

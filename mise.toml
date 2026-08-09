@@ -7,6 +7,8 @@ run = '''
 for script in scripts/*.sh; do
   bash -n "$script"
 done
+ruby -c scripts/manage-kind-hosts.rb >/dev/null
+ruby scripts/manage-kind-hosts_test.rb
 '''
 
 [tasks."validate:cert-manager-config"]
@@ -15,11 +17,18 @@ run = "kubectl kustomize platform/cert-manager-config >/dev/null"
 
 [tasks."validate:argocd-kind-bootstrap"]
 description = "Render the kind Argo CD bootstrap resources"
-run = "kubectl kustomize bootstrap/argocd/kind >/dev/null"
+run = '''
+kubectl kustomize bootstrap/argocd/kind >/dev/null
+kubectl kustomize platform/argocd/config >/dev/null
+'''
 
 [tasks."validate:argocd-repositories"]
 description = "Render Argo CD repository registrations"
 run = "kubectl kustomize platform/argocd/repositories >/dev/null"
+
+[tasks."validate:argocd-config"]
+description = "Render steady-state Argo CD server configuration"
+run = "kubectl kustomize platform/argocd/config >/dev/null"
 
 [tasks."validate:minio"]
 description = "Render the MinIO wrapper Helm chart"
@@ -95,7 +104,7 @@ helm lint platform/observability/grafana >/dev/null
 helm template grafana platform/observability/grafana \
   --namespace observability \
   >/tmp/opencode/grafana-rendered.yaml
-ruby -ryaml -rjson -e 'docs = YAML.load_stream(File.read("/tmp/opencode/grafana-rendered.yaml")); service = docs.find { |doc| doc&.dig("kind") == "Service" && doc.dig("metadata", "name") == "grafana" }; abort "Grafana Service is not a LoadBalancer" unless service&.dig("spec", "type") == "LoadBalancer"; config = docs.select { |doc| doc&.dig("kind") == "ConfigMap" }.flat_map { |doc| doc.fetch("data", {}).values }.join("\n"); abort "Mimir datasource tenant header is missing" unless config.include?("X-Scope-OrgID") && config.include?("k8s-playground"); dashboards = docs.find { |doc| doc&.dig("kind") == "ConfigMap" && doc.dig("metadata", "name") == "grafana-platform-dashboards" }; abort "Grafana dashboards are missing" unless dashboards&.fetch("data", {})&.length == 2; dashboards.fetch("data").each_value { |json| JSON.parse(json) }'
+ruby -ryaml -rjson -e 'docs = YAML.load_stream(File.read("/tmp/opencode/grafana-rendered.yaml")); service = docs.find { |doc| doc&.dig("kind") == "Service" && doc.dig("metadata", "name") == "grafana" }; abort "Grafana Service is not a ClusterIP" unless service&.dig("spec", "type") == "ClusterIP"; config = docs.select { |doc| doc&.dig("kind") == "ConfigMap" }.flat_map { |doc| doc.fetch("data", {}).values }.join("\n"); abort "Grafana management URL is missing" unless config.include?("https://grafana.k8s-playground.test/"); abort "Mimir datasource tenant header is missing" unless config.include?("X-Scope-OrgID") && config.include?("k8s-playground"); dashboards = docs.find { |doc| doc&.dig("kind") == "ConfigMap" && doc.dig("metadata", "name") == "grafana-platform-dashboards" }; abort "Grafana dashboards are missing" unless dashboards&.fetch("data", {})&.length == 2; dashboards.fetch("data").each_value { |json| JSON.parse(json) }'
 '''
 
 [tasks."validate:cert-manager"]
@@ -111,6 +120,10 @@ helm template cert-manager platform/cert-manager \
 [tasks."validate:gateway-api-config"]
 description = "Render the platform Gateway API config"
 run = "kubectl kustomize platform/gateway-api-config >/dev/null"
+
+[tasks."validate:management-gateway-config"]
+description = "Render the management Gateway API config"
+run = "kubectl kustomize platform/management-gateway-config >/dev/null"
 
 [tasks."validate:k8s-playground-service"]
 description = "Render the k8s-playground-service app manifests"
@@ -152,12 +165,22 @@ helm template istio-ingressgateway platform/istio/ingressgateway \
   >/dev/null
 '''
 
+[tasks."validate:istio-managementgateway"]
+description = "Render the Istio management gateway wrapper Helm chart"
+run = '''
+helm dependency update platform/istio/managementgateway >/dev/null
+helm template istio-managementgateway platform/istio/managementgateway \
+  --namespace istio-system \
+  >/dev/null
+'''
+
 [tasks."validate:all"]
 description = "Run all platform-config validation tasks"
 run = '''
 mise run validate:scripts
 mise run validate:argocd-kind-bootstrap
 mise run validate:argocd-repositories
+mise run validate:argocd-config
 mise run validate:minio
 mise run validate:observability-object-storage-config
 mise run validate:mimir
@@ -166,11 +189,13 @@ mise run validate:grafana
 mise run validate:cert-manager
 mise run validate:cert-manager-config
 mise run validate:gateway-api-config
+mise run validate:management-gateway-config
 mise run validate:k8s-playground-service
 mise run validate:istio-base
 mise run validate:istiod
 mise run validate:istio-cni
 mise run validate:istio-ingressgateway
+mise run validate:istio-managementgateway
 '''
 
 [tasks."cluster:create"]
@@ -193,6 +218,7 @@ mise run grafana:bootstrap-secrets --name {{ usage.name }}
 mise run argocd:bootstrap-root --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
 mise run gateway:wait --name {{ usage.name }}
+mise run management-gateway:wait --name {{ usage.name }}
 mise run gateway:smoke-test --name {{ usage.name }}
 mise run kind:status --name {{ usage.name }}
 mise run metallb:status --name {{ usage.name }} --namespace {{ usage.metallb_namespace }}
@@ -200,6 +226,10 @@ mise run app:status --name {{ usage.name }}
 mise run istio:status --name {{ usage.name }}
 mise run gateway:status --name {{ usage.name }}
 mise run argocd:status --name {{ usage.name }}
+mise run cluster:external-ips --name {{ usage.name }}
+if ! mise run cluster:hosts:check --name {{ usage.name }}; then
+  echo "Run 'mise run cluster:hosts:sync --name {{ usage.name }}' to update /etc/hosts"
+fi
 '''
 
 [tasks."cluster:delete"]
@@ -307,7 +337,7 @@ printf 'Username: %s\nPassword: %s\n' "$user" "$password"
 '''
 
 [tasks."grafana:status"]
-description = "Show Grafana workload and LoadBalancer status"
+description = "Show Grafana workload, storage, and Service status"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Grafana namespace" default="observability"
@@ -360,7 +390,138 @@ flag "--path <path>" help="kustomize path for Argo CD prerequisites" default="bo
 '''
 run = '''
 kubectl --context kind-{{ usage.name }} apply -k {{ usage.path }}
+kubectl --context kind-{{ usage.name }} apply -k platform/argocd/config
 kubectl --context kind-{{ usage.name }} apply --server-side --force-conflicts -n {{ usage.namespace }} -f https://raw.githubusercontent.com/argoproj/argo-cd/{{ usage.version }}/manifests/install.yaml
+kubectl --context kind-{{ usage.name }} apply -k platform/argocd/config
+'''
+
+[tasks."cluster:external-ips"]
+description = "List externally reachable platform endpoints"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+'''
+run = '''
+context="kind-{{ usage.name }}"
+
+print_endpoint() {
+  endpoint="$1"
+  namespace="$2"
+  service="$3"
+  url="$4"
+
+  if ! ip="$(kubectl --context "$context" -n "$namespace" get service/"$service" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"; then
+    ip="<missing>"
+    url="-"
+  elif [ -z "$ip" ]; then
+    ip="<pending>"
+    url="-"
+  fi
+
+  printf '%-22s %-40s %-18s %s\n' "$endpoint" "$namespace/$service" "$ip" "$url"
+}
+
+printf '%-22s %-40s %-18s %s\n' "ENDPOINT" "SERVICE" "EXTERNAL IP" "URL"
+print_endpoint "Playground service" "istio-system" "istio-ingressgateway" "https://app.k8s-playground.test"
+print_endpoint "Argo CD" "istio-system" "istio-managementgateway" "https://argocd.k8s-playground.test"
+print_endpoint "Grafana" "istio-system" "istio-managementgateway" "https://grafana.k8s-playground.test"
+'''
+
+[tasks."cluster:hosts:check"]
+description = "Check managed kind hostname mappings against live Gateway IPs"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--hosts-file <hosts-file>" help="hosts file to inspect" default="/etc/hosts"
+'''
+run = '''
+scripts/manage-kind-hosts.rb check \
+  --context kind-{{ usage.name }} \
+  --hosts-file "{{ usage.hosts_file }}"
+'''
+
+[tasks."cluster:hosts:sync"]
+description = "Safely synchronize kind Gateway hostnames in /etc/hosts"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--hosts-file <hosts-file>" help="hosts file to update" default="/etc/hosts"
+'''
+run = '''
+hosts_file="{{ usage.hosts_file }}"
+if [ -L "$hosts_file" ]; then
+  echo "$hosts_file is a symbolic link; refusing to replace it" >&2
+  exit 1
+fi
+
+rendered="$(mktemp)"
+trap 'rm -f "$rendered"' EXIT
+scripts/manage-kind-hosts.rb render \
+  --context kind-{{ usage.name }} \
+  --hosts-file "$hosts_file" \
+  >"$rendered"
+
+if cmp --silent "$hosts_file" "$rendered"; then
+  echo "$hosts_file is already current"
+else
+  diff --unified "$hosts_file" "$rendered" || true
+  backup="${hosts_file}.k8s-playground.backup"
+  if [ -L "$backup" ]; then
+    echo "$backup is a symbolic link; refusing to replace it" >&2
+    exit 1
+  fi
+  if [ -w "$hosts_file" ]; then
+    cp --archive "$hosts_file" "$backup"
+    cp "$rendered" "$hosts_file"
+  else
+    sudo cp --archive "$hosts_file" "$backup"
+    sudo cp "$rendered" "$hosts_file"
+  fi
+fi
+
+if [ "$hosts_file" = "/etc/hosts" ] && command -v resolvectl >/dev/null 2>&1; then
+  sudo resolvectl flush-caches
+fi
+
+scripts/manage-kind-hosts.rb check \
+  --context kind-{{ usage.name }} \
+  --hosts-file "$hosts_file"
+'''
+
+[tasks."cluster:hosts:remove"]
+description = "Remove only the managed kind hostname block from /etc/hosts"
+usage = '''
+flag "--hosts-file <hosts-file>" help="hosts file to update" default="/etc/hosts"
+'''
+run = '''
+hosts_file="{{ usage.hosts_file }}"
+if [ -L "$hosts_file" ]; then
+  echo "$hosts_file is a symbolic link; refusing to replace it" >&2
+  exit 1
+fi
+
+rendered="$(mktemp)"
+trap 'rm -f "$rendered"' EXIT
+scripts/manage-kind-hosts.rb remove --hosts-file "$hosts_file" >"$rendered"
+
+if cmp --silent "$hosts_file" "$rendered"; then
+  echo "$hosts_file does not contain a managed kind hostname block"
+else
+  diff --unified "$hosts_file" "$rendered" || true
+  backup="${hosts_file}.k8s-playground.backup"
+  if [ -L "$backup" ]; then
+    echo "$backup is a symbolic link; refusing to replace it" >&2
+    exit 1
+  fi
+  if [ -w "$hosts_file" ]; then
+    cp --archive "$hosts_file" "$backup"
+    cp "$rendered" "$hosts_file"
+  else
+    sudo cp --archive "$hosts_file" "$backup"
+    sudo cp "$rendered" "$hosts_file"
+  fi
+fi
+
+if [ "$hosts_file" = "/etc/hosts" ] && command -v resolvectl >/dev/null 2>&1; then
+  sudo resolvectl flush-caches
+fi
 '''
 
 [tasks."argocd:wait:application-controller"]
@@ -502,7 +663,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--manifest <manifest>" help="root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-app <root-app>" help="root Argo CD Application name" default="k8s-playground-kind-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir alloy grafana cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway gateway-api-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories minio observability-object-storage-config mimir alloy grafana cert-manager cert-manager-config istio-base istiod istio-cni istio-ingressgateway istio-managementgateway gateway-api-config argocd-config management-gateway-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''
@@ -547,14 +708,14 @@ printf '\n'
 '''
 
 [tasks."argocd:port-forward"]
-description = "Port-forward the Argo CD API/UI to localhost:8080"
+description = "Port-forward the internal Argo CD HTTP API/UI to localhost:8080"
 usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Argo CD namespace" default="argocd"
 flag "--port <port>" help="local port" default="8080"
 '''
 run = '''
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} port-forward svc/argocd-server {{ usage.port }}:443
+kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} port-forward svc/argocd-server {{ usage.port }}:80
 '''
 
 [tasks."istio:wait"]
@@ -616,20 +777,10 @@ kubectl --context kind-{{ usage.name }} wait --for=condition=Established \
   --timeout=300s
 
 kubectl --context kind-{{ usage.name }} wait gatewayclass/istio --for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait certificate/k8s-playground-user-gateway --for=condition=Ready --timeout=300s
 kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait gateway/{{ usage.gateway }} --for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
 kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait gateway/{{ usage.gateway }} --for=jsonpath='{.status.conditions[?(@.type=="Programmed")].status}'=True --timeout=300s
 kubectl --context kind-{{ usage.name }} -n {{ usage.route_namespace }} wait httproute/{{ usage.route }} --for=jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
-'''
-
-[tasks."gateway:external-ip"]
-description = "Print the Istio ingress gateway LoadBalancer IP"
-usage = '''
-flag "--name <name>" help="kind cluster name" default="k8s-playground"
-flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
-flag "--service <service>" help="gateway service name" default="istio-ingressgateway"
-'''
-run = '''
-kubectl --context kind-{{ usage.name }} -n {{ usage.namespace }} get service/{{ usage.service }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}{"\n"}'
 '''
 
 [tasks."gateway:smoke-test"]
@@ -638,6 +789,7 @@ usage = '''
 flag "--name <name>" help="kind cluster name" default="k8s-playground"
 flag "--namespace <namespace>" help="Istio namespace" default="istio-system"
 flag "--service <service>" help="gateway service name" default="istio-ingressgateway"
+flag "--hostname <hostname>" help="Gateway API route hostname" default="app.k8s-playground.test"
 flag "--expected <expected>" help="expected response body" default="Howdy from k8s-playground-service"
 flag "--attempts <attempts>" help="maximum HTTP attempts" default="30"
 '''
@@ -671,14 +823,15 @@ if [ -z "$ip" ]; then
   exit 1
 fi
 
-url="http://$ip/"
+hostname="{{ usage.hostname }}"
+url="https://$hostname/"
 expected="{{ usage.expected }}"
 
 body=""
 last_error=""
 for i in $(seq 1 "$attempts"); do
   request_ok="false"
-  if body="$(curl --fail --silent --show-error --connect-timeout 2 --max-time 2 "$url" 2>&1)"; then
+  if body="$(curl --fail --insecure --silent --show-error --connect-timeout 2 --max-time 2 --resolve "$hostname:443:$ip" "$url" 2>&1)"; then
     request_ok="true"
     last_error="HTTP response did not match the expected body"
   else
@@ -706,6 +859,37 @@ echo "Last error: $last_error" >&2
 exit 1
 '''
 
+[tasks."management-gateway:wait"]
+description = "Wait for management Gateway API resources to become ready"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--gateway-namespace <gateway-namespace>" help="Gateway namespace" default="istio-system"
+flag "--gateway <gateway>" help="management Gateway name" default="k8s-playground-management-gateway"
+'''
+run = '''
+scripts/wait-for-rollout.sh --context kind-{{ usage.name }} --namespace {{ usage.gateway_namespace }} --resource deployment/istio-managementgateway --selector app=istio-managementgateway,istio=managementgateway --timeout 300 --report-interval 60
+
+management_ip=""
+for i in $(seq 1 60); do
+  management_ip="$(kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} get service/istio-managementgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
+  if [ -n "$management_ip" ]; then
+    echo "istio-managementgateway LoadBalancer IP: $management_ip"
+    break
+  fi
+  if [ "$i" = "60" ]; then
+    echo "istio-managementgateway LoadBalancer IP was not assigned" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait certificate/k8s-playground-management-gateway --for=condition=Ready --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait gateway/{{ usage.gateway }} --for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n {{ usage.gateway_namespace }} wait gateway/{{ usage.gateway }} --for=jsonpath='{.status.conditions[?(@.type=="Programmed")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n argocd wait httproute/argocd --for=jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+kubectl --context kind-{{ usage.name }} -n observability wait httproute/grafana --for=jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'=True --timeout=300s
+'''
+
 [tasks."gateway:status"]
 description = "Show Gateway API status"
 usage = '''
@@ -713,7 +897,7 @@ flag "--name <name>" help="kind cluster name" default="k8s-playground"
 '''
 run = '''
 kubectl --context kind-{{ usage.name }} get gatewayclass,gateway,httproute --all-namespaces -o wide
-kubectl --context kind-{{ usage.name }} -n istio-system get service/istio-ingressgateway -o wide
+kubectl --context kind-{{ usage.name }} -n istio-system get service/istio-ingressgateway service/istio-managementgateway -o wide
 '''
 
 [tasks."kind:create"]

@@ -115,6 +115,10 @@ Current local cluster tasks:
 ```sh
 mise run cluster:create
 mise run cluster:delete
+mise run cluster:external-ips
+mise run cluster:hosts:check
+mise run cluster:hosts:sync
+mise run cluster:hosts:remove
 mise run kind:create
 mise run kind:delete
 mise run kind:nodes
@@ -160,9 +164,9 @@ Current local Gateway API tasks:
 
 ```sh
 mise run gateway:wait
-mise run gateway:external-ip
 mise run gateway:smoke-test
 mise run gateway:status
+mise run management-gateway:wait
 ```
 
 Current local Grafana tasks:
@@ -421,9 +425,11 @@ Stage 1 tracer bullet:
 
 Stage 2 target architecture:
 
-- Move external app access behind Istio ingress gateway.
+- Move external access behind separate Istio user and management ingress gateways.
 - Use Gateway API rather than NodePort or legacy Ingress.
 - Change app services back to normal in-cluster services where appropriate.
+- Keep user traffic on `app.k8s-playground.test` and management traffic on dedicated `argocd.k8s-playground.test` and `grafana.k8s-playground.test` hosts.
+- Route Argo CD and Grafana through the management gateway while keeping their Services internal as `ClusterIP`.
 
 Platform-owned resources:
 
@@ -446,11 +452,17 @@ The temporary direct `LoadBalancer` service is acceptable only as an early trace
 
 ### Local Domain Names
 
-Defer local domain name setup.
+Use explicit `.test` hostnames for the mature local Gateway API path:
 
-The first tracer bullet should be accessed directly by its MetalLB-assigned IP address. This avoids premature decisions about local wildcard DNS, `/etc/hosts`, or external wildcard DNS helpers.
+```text
+app.k8s-playground.test      -> current user gateway LoadBalancer IP
+argocd.k8s-playground.test   -> current management gateway LoadBalancer IP
+grafana.k8s-playground.test  -> current management gateway LoadBalancer IP
+```
 
-Before adopting local domains, evaluate whether the DNS solution should live outside the cluster, be handled by the host, or use an external wildcard DNS helper. Avoid making local DNS a prerequisite for the early platform path.
+Do not predict or hard-code addresses from the Docker subnet. `cluster:hosts:check` and `cluster:hosts:sync` query the live Gateway Services and manage only a marked block in `/etc/hosts`; all unrelated host entries remain untouched. The sync task refuses missing/pending IPs, malformed markers, conflicting unmanaged copies of the playground hostnames, and symbolic-link hosts files. `cluster:hosts:remove` removes only the managed block.
+
+Both gateways terminate HTTPS with cert-manager certificates issued by the cluster-local CA. The CA and certificates are intentionally ephemeral across kind rebuilds and are not added to the host trust store; browser warnings are an accepted kind-only limitation.
 
 ### Observability
 
@@ -638,12 +650,12 @@ Current wave structure:
 | `20` | Configuration consumed by core foundations, such as cert-manager issuers/certificates and MinIO buckets or backend object-storage credentials. |
 | `25` | Core observability metrics storage that should exist before workloads, starting with Mimir. |
 | `30` | Platform API foundations and telemetry agents that depend on earlier storage backends, currently Istio base APIs and Alloy Kubernetes/node metrics collection. |
-| `35` | Observability UI and datasource wiring, especially Grafana backed by Mimir. |
+| `35` | Management and observability UI runtime configuration, including Argo CD server settings and Grafana backed by Mimir. |
 | `40` | Istio control plane runtime, currently `istiod` with revision `stable`. |
 | `45` | Istio CNI node agent, installed after `istiod` and before meshed workloads. |
-| `50` | Istio ingress gateway or other mesh data-plane gateway components. |
+| `50` | Istio user and management ingress gateway data-plane components. |
 | `55` | Additional telemetry layers that should be available before app workloads where practical, such as Loki log collection, Pyroscope, Tempo, and Beyla. |
-| `60` | Platform-owned mesh, ingress, and telemetry integration configuration, such as `GatewayClass`, shared `Gateway`, namespace-level mesh defaults, and Istio-to-collector settings. |
+| `60` | Platform-owned mesh, ingress, and telemetry integration configuration, including user and management Gateways, certificates, routes, namespace-level mesh defaults, and Istio-to-collector settings. |
 | `70` | Application components, including workloads, services, and app-owned routes when internal resource ordering is sufficient. |
 | `80` | Dashboards, alerting configuration, and other late visualization or operations resources that can reference app-specific signals. |
 
@@ -685,14 +697,17 @@ platform/
   cert-manager/
   cert-manager-config/
   gateway-api-config/
+  management-gateway-config/
   istio/
     base/
     istiod/
     cni/
     ingressgateway/
+    managementgateway/
   observability/
 
 scripts/
+  manage-kind-hosts.rb
   render-metallb-kind-config.sh
   wait-for-rollout.sh
 ```
@@ -743,7 +758,7 @@ k8s-playground-argocd-apps/
 - [x] Push, sync, and live-verify the dedicated app service account identity with app-internal sync waves for scratch rebuild ordering.
 - [x] Push, sync, and live-verify ingress-gateway-only AuthorizationPolicy for the app workload.
 - [x] Validate external routing, sidecar injection, mTLS, and authorization.
-- [ ] Prepare Argo-managed observability wiring and wrapper charts for the Grafana stack, using waves below app wave `70` for foundational storage, backends, collectors, and Grafana.
+- [x] Prepare Argo-managed observability wiring and wrapper charts for the Grafana stack, using waves below app wave `70` for foundational storage, backends, collectors, and Grafana.
 - [x] Add local bootstrap support for MinIO root credentials that cannot be committed to Git.
 - [x] Install kind-local MinIO as generic platform object storage for observability and future platform consumers.
 - [x] Add Argo-managed observability object-storage config for the `mimir-blocks`, `mimir-ruler`, `mimir-alertmanager`, `loki`, `tempo`, and `pyroscope` buckets.
@@ -753,9 +768,13 @@ k8s-playground-argocd-apps/
 - [x] Add desired-state Alloy wrapper chart and Argo wiring for wave `30`, parallel with Istio base rather than dependent on it.
 - [x] Install Alloy in `observability-collectors` for node-local kubelet and cAdvisor metrics before app-specific telemetry.
 - [x] Configure Alloy to remote-write metrics to Mimir with tenant `k8s-playground`.
-- [ ] Install Grafana through Argo CD with declarative datasources and dashboards.
-- [ ] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
-- [ ] Expose Grafana through a MetalLB-backed `LoadBalancer` Service and configure authentication without committing plaintext credentials.
+- [x] Install Grafana through Argo CD with declarative datasources and dashboards.
+- [x] Configure Grafana's Mimir/Prometheus datasource with tenant `k8s-playground` where required.
+- [x] Initially expose Grafana through a MetalLB-backed `LoadBalancer` Service and configure authentication without committing plaintext credentials.
+- [ ] Install and live-verify a separate Istio management gateway through Argo CD.
+- [ ] Add cert-manager-backed HTTPS host routing for `app.k8s-playground.test`, `argocd.k8s-playground.test`, and `grafana.k8s-playground.test`.
+- [ ] Validate safe `/etc/hosts` check, sync, stale-IP replacement, conflict detection, and managed-block removal against live Gateway IPs.
+- [ ] Return Argo CD and Grafana Services to `ClusterIP` after their management-gateway routes are healthy, then remove the temporary direct Argo CD LoadBalancer bootstrap customization.
 - [ ] Migrate Grafana from SQLite on a local PVC to PostgreSQL before adding replicas or claiming production-style high availability.
 - [ ] Install Keycloak in a later identity-learning phase and integrate Grafana through generic OAuth/OIDC with explicit role mapping and a tested break-glass login path.
 - [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
@@ -782,6 +801,7 @@ k8s-playground-argocd-apps/
 - The initial direct LoadBalancer app smoke test was replaced by the Gateway API smoke test after ingress migration.
 - Argo CD is introduced only after the first tracer bullet works.
 - Argo CD pods are healthy in the `argocd` namespace.
+- Argo CD remains internally reachable through its `ClusterIP` Service and is externally available only through the management Gateway after that later-wave route is healthy.
 - Argo CD CRDs are registered: `Application`, `ApplicationSet`, and `AppProject`.
 - MetalLB remains managed by local kind bootstrap tasks, and Argo-managed apps can still use MetalLB-assigned LoadBalancer IPs.
 - Argo CD can manage the tracer app without breaking external reachability.
@@ -792,9 +812,11 @@ k8s-playground-argocd-apps/
 - Istio CNI DaemonSet is healthy on every schedulable node before sidecar injection is enabled for app workloads.
 - Istio ingress gateway is healthy.
 - Istio ingress gateway `Service` receives a MetalLB LoadBalancer IP.
+- Istio management gateway runs as a separate data-plane deployment and its Service receives a separate MetalLB LoadBalancer IP.
 - Gateway API CRDs are established.
-- `GatewayClass/istio`, `Gateway/k8s-playground-gateway`, and `HTTPRoute/k8s-playground-service` are accepted.
+- `GatewayClass/istio`, both user and management Gateways, and the app/Argo CD/Grafana host routes are accepted.
 - `mise run gateway:smoke-test` verifies the app through the Istio ingress gateway path.
+- `mise run cluster:hosts:check` confirms that the managed `/etc/hosts` block matches the live user and management Gateway IPs without modifying unrelated entries.
 - `mise run kind:repair-mesh` detects expired or near-expiry Istio workload certificates after long kind host suspends, recycles only affected controller-managed pods, waits for recovery, and reruns the gateway smoke test.
 - App pods receive sidecars through revision-based injection.
 - App-to-app traffic uses mTLS.
@@ -867,7 +889,6 @@ Later app resources after Istio is introduced:
 
 ## Open Decisions
 
-- What local domain should be used for apps?
 - Should future GitOps secret handling use SOPS/age, External Secrets Operator, or both for different secret classes?
 
 ## Closed Decisions
@@ -881,7 +902,9 @@ Later app resources after Istio is introduced:
 - Use MetalLB for kind LoadBalancer support and do not use cloud-provider-kind.
 - Use MetalLB layer 2 mode and do not use BGP mode.
 - Generate the MetalLB IP address pool from the Docker `kind` network during bring-up rather than hard-coding a subnet.
-- Defer local domain name and wildcard DNS setup. Use direct MetalLB IPs for the first tracer bullet.
+- Use direct MetalLB IPs for the first tracer bullet, then use safely managed `.test` hostnames in `/etc/hosts` for the mature user and management Gateway paths without introducing a local DNS service.
+- Separate normal user traffic from Argo CD and Grafana management traffic with independently deployed Istio gateways and LoadBalancer IPs.
+- Use cert-manager-issued ephemeral local certificates for kind HTTPS but do not install the temporary cluster CA into the host trust store; browser trust warnings are accepted locally.
 - Do not use Argo CD for the first bring-up. Use local tasks for kind, MetalLB, and the first tracer app.
 - Introduce Argo CD immediately after the direct LoadBalancer tracer bullet works.
 - For the initial live build, have Argo CD adopt/manage the tracer app before adding cert-manager, Istio, and observability. Keep MetalLB outside Argo for the kind cluster.
@@ -893,7 +916,7 @@ Later app resources after Istio is introduced:
 - Install Mimir and Kubernetes/node metrics before Tempo and app-specific telemetry because metrics are the higher-priority initial signal.
 - Collect logs directly from Kubernetes stdout/stderr rather than using OTLP logs by default.
 - Use MinIO only as kind-local object storage for observability backends; use real object storage for future cloud clusters.
-- Expose Grafana with a LoadBalancer Service and configured auth, not port-forwarding.
+- Expose Grafana with configured authentication through the dedicated management Gateway, not port-forwarding or a steady-state direct LoadBalancer Service.
 - Support HTTP/2 later, after observability is installed, starting with a reversible mesh-only experiment before changing the Go app to support h2c.
 - Pin the tracer-bullet app image to `mblayman/k8s-playground-service:0.1.0` instead of `latest`.
 - Include Istio CNI in the sidecar-mode install so application pods do not require the privileged `istio-init` init container path for traffic redirection.

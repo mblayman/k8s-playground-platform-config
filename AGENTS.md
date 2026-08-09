@@ -21,6 +21,7 @@ Current wrapper chart paths:
 - `platform/istio/istiod`
 - `platform/istio/cni`
 - `platform/istio/ingressgateway`
+- `platform/istio/managementgateway`
 - `platform/minio`
 - `platform/observability/alloy`
 - `platform/observability/grafana`

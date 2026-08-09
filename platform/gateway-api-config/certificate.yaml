@@ -1,0 +1,19 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: k8s-playground-user-gateway
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: k8s-playground-user-gateway
+    app.kubernetes.io/part-of: k8s-playground
+spec:
+  secretName: k8s-playground-user-gateway-tls
+  dnsNames:
+    - app.k8s-playground.test
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
