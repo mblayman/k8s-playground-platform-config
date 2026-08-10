@@ -92,6 +92,8 @@ ruby -ryaml -e '
   internal_service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "mimir-internal" }
   config = cm.fetch("data").fetch("mimir.yaml")
   envoy = gateway_cm.fetch("data").fetch("envoy.yaml")
+  server_sds = gateway_cm.fetch("data").fetch("server-certificate-sds.yaml")
+  client_sds = gateway_cm.fetch("data").fetch("client-validation-sds.yaml")
   ca_volume = deployment.dig("spec", "template", "spec", "volumes").find { |volume| volume["name"] == "minio-ca" }
   abort "Mimir MinIO CA Certificate is missing" unless certificate.dig("spec", "secretName") == "minio-client-ca"
   abort "Mimir must use verified MinIO HTTPS on port 443" unless config.scan("endpoint: minio.minio.svc.cluster.local:443").length == 3 && config.scan("tls_ca_path: /etc/mimir/minio-ca/ca.crt").length == 3 && !config.include?("insecure: true")
@@ -101,12 +103,15 @@ ruby -ryaml -e '
   abort "Mimir gateway must run two replicas" unless gateway_deployment.dig("spec", "replicas") == 2
   abort "Mimir must expose only authenticated HTTPS" unless gateway_service.dig("spec", "selector", "app.kubernetes.io/name") == "mimir-gateway" && gateway_service.dig("spec", "ports") == [{"name" => "https", "port" => 443, "targetPort" => "https", "appProtocol" => "https"}]
   abort "Raw Mimir must remain internal on 8080" unless internal_service.dig("spec", "selector", "app.kubernetes.io/name") == "mimir" && internal_service.dig("spec", "ports").any? { |port| port["name"] == "http" && port["port"] == 8080 }
-  abort "Mimir gateway does not enforce the Alloy certificate identity" unless envoy.include?("spiffe://k8s-playground/collectors/alloy") && envoy.include?("require_client_certificate: true")
+  abort "Mimir gateway does not enforce the Alloy certificate identity" unless client_sds.include?("spiffe://k8s-playground/collectors/alloy") && envoy.include?("require_client_certificate: true")
   abort "Mimir gateway route allowlist is incomplete" unless envoy.include?("path: /api/v1/push") && envoy.include?("path: /otlp/v1/metrics") && envoy.include?("append_action: OVERWRITE_IF_EXISTS_OR_ADD")
-  abort "Mimir gateway does not watch certificate rotations" unless envoy.scan("watched_directory:").length == 2
+  abort "Mimir gateway does not use filesystem SDS for certificate rotation" unless envoy.include?("tls_certificate_sds_secret_configs") && envoy.include?("validation_context_sds_secret_config") && server_sds.include?("watched_directory:") && client_sds.include?("watched_directory:")
+  abort "Mimir gateway does not cap downstream connections" unless envoy.include?("envoy.resource_monitors.global_downstream_max_connections") && envoy.include?("max_active_downstream_connections: 1024")
   File.write(File.join(validation_dir, "mimir.yaml"), config)
   File.write(File.join(validation_dir, "runtime.yaml"), cm.fetch("data").fetch("runtime.yaml"))
   File.write(File.join(validation_dir, "mimir-gateway-envoy.yaml"), envoy)
+  File.write(File.join(validation_dir, "mimir-gateway-server-certificate-sds.yaml"), server_sds)
+  File.write(File.join(validation_dir, "mimir-gateway-client-validation-sds.yaml"), client_sds)
 '
 docker run --rm \
   -v "$validation_dir/mimir.yaml:/etc/mimir/mimir.yaml:ro" \
@@ -133,6 +138,8 @@ chmod 0644 "$validation_dir/mimir-gateway-tls/tls.key"
 docker run --rm \
   --user 0:0 \
   -v "$validation_dir/mimir-gateway-envoy.yaml:/etc/envoy/envoy.yaml:ro" \
+  -v "$validation_dir/mimir-gateway-server-certificate-sds.yaml:/etc/envoy/server-certificate-sds.yaml:ro" \
+  -v "$validation_dir/mimir-gateway-client-validation-sds.yaml:/etc/envoy/client-validation-sds.yaml:ro" \
   -v "$validation_dir/mimir-gateway-tls:/etc/envoy/tls:ro" \
   envoyproxy/envoy:v1.36.4 \
   --mode validate \

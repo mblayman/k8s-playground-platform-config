@@ -1,3 +1,6 @@
+node:
+  id: mimir-gateway
+  cluster: mimir-gateway
 static_resources:
   listeners:
     - name: ingest_https
@@ -15,22 +18,16 @@ static_resources:
               common_tls_context:
                 tls_params:
                   tls_minimum_protocol_version: TLSv1_2
-                tls_certificates:
-                  - certificate_chain:
-                      filename: /etc/envoy/tls/tls.crt
-                    private_key:
-                      filename: /etc/envoy/tls/tls.key
-                    watched_directory:
-                      path: /etc/envoy/tls
-                validation_context:
-                  trusted_ca:
-                    filename: /etc/envoy/tls/ca.crt
-                  watched_directory:
-                    path: /etc/envoy/tls
-                  match_typed_subject_alt_names:
-                    - san_type: URI
-                      matcher:
-                        exact: spiffe://k8s-playground/collectors/alloy
+                tls_certificate_sds_secret_configs:
+                  - name: mimir_gateway_certificate
+                    sds_config:
+                      path_config_source:
+                        path: /etc/envoy/server-certificate-sds.yaml
+                validation_context_sds_secret_config:
+                  name: alloy_client_validation
+                  sds_config:
+                    path_config_source:
+                      path: /etc/envoy/client-validation-sds.yaml
           filters:
             - name: envoy.filters.network.http_connection_manager
               typed_config:
@@ -110,3 +107,10 @@ static_resources:
                     socket_address:
                       address: mimir-internal.observability.svc.cluster.local
                       port_value: 8080
+overload_manager:
+  refresh_interval: 0.250s
+  resource_monitors:
+    - name: envoy.resource_monitors.global_downstream_max_connections
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig
+        max_active_downstream_connections: 1024

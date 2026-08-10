@@ -17,6 +17,8 @@ configMapGenerator:
   - name: mimir-gateway
     files:
       - envoy.yaml=gateway-envoy.yaml
+      - server-certificate-sds.yaml=gateway-server-certificate-sds.yaml
+      - client-validation-sds.yaml=gateway-client-validation-sds.yaml
     options:
       labels:
         app.kubernetes.io/name: mimir-gateway
