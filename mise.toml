@@ -285,8 +285,23 @@ description = "Render the management Gateway API config"
 run = "kubectl kustomize platform/management-gateway-config >/dev/null"
 
 [tasks."validate:k8s-playground-service"]
-description = "Render the k8s-playground-service app manifests"
-run = "kubectl kustomize apps/k8s-playground-service >/dev/null"
+description = "Render and validate the k8s-playground-service app manifests"
+run = '''
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
+kubectl kustomize apps/k8s-playground-service >"$validation_dir/k8s-playground-service-rendered.yaml"
+VALIDATION_DIR="$validation_dir" ruby -ryaml -e '
+  docs = YAML.load_stream(File.read(File.join(ENV.fetch("VALIDATION_DIR"), "k8s-playground-service-rendered.yaml"))).compact
+  deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "k8s-playground-service" }
+  container = deployment.dig("spec", "template", "spec", "containers").find { |candidate| candidate["name"] == "service" }
+  env = container.fetch("env").to_h { |entry| [entry.fetch("name"), entry["value"]] }
+  abort "k8s-playground-service image is not the OpenTelemetry release" unless container["image"] == "mblayman/k8s-playground-service:0.2.0"
+  abort "application metrics must use OTLP/HTTP through Alloy" unless env["OTEL_SDK_DISABLED"] == "false" && env["OTEL_METRICS_EXPORTER"] == "otlp" && env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://alloy.observability-collectors.svc.cluster.local:4318" && env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+  abort "traces must remain disabled until Tempo is available" unless env["OTEL_TRACES_EXPORTER"] == "none"
+  abort "stable HTTP semantic conventions are not enabled" unless env["OTEL_SEMCONV_STABILITY_OPT_IN"] == "http"
+  abort "OpenTelemetry export is not bounded" unless env["OTEL_EXPORTER_OTLP_TIMEOUT"] == "10000" && env["OTEL_BSP_MAX_QUEUE_SIZE"] == "2048" && env["OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT"] == "32"
+'
+'''
 
 [tasks."validate:istio-base"]
 description = "Render the Istio base wrapper Helm chart"

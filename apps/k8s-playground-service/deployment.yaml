@@ -26,7 +26,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: service
-          image: mblayman/k8s-playground-service:0.1.0
+          image: mblayman/k8s-playground-service:0.2.0
           imagePullPolicy: Always
           ports:
             - name: http
@@ -34,6 +34,66 @@ spec:
           env:
             - name: GREETING
               value: Howdy
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTEL_SDK_DISABLED
+              value: "false"
+            - name: OTEL_SERVICE_NAME
+              value: k8s-playground-service
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.namespace=k8s-playground,service.version=0.2.0,service.instance.id=$(POD_UID),deployment.environment.name=kind,k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME),k8s.node.name=$(NODE_NAME)
+            - name: OTEL_METRICS_EXPORTER
+              value: otlp
+            - name: OTEL_TRACES_EXPORTER
+              value: none
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://alloy.observability-collectors.svc.cluster.local:4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: OTEL_EXPORTER_OTLP_TIMEOUT
+              value: "10000"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "30000"
+            - name: OTEL_METRIC_EXPORT_TIMEOUT
+              value: "10000"
+            - name: OTEL_PROPAGATORS
+              value: tracecontext,baggage
+            - name: OTEL_TRACES_SAMPLER
+              value: parentbased_traceidratio
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "1.0"
+            - name: OTEL_BSP_MAX_QUEUE_SIZE
+              value: "2048"
+            - name: OTEL_BSP_MAX_EXPORT_BATCH_SIZE
+              value: "512"
+            - name: OTEL_BSP_SCHEDULE_DELAY
+              value: "5000"
+            - name: OTEL_BSP_EXPORT_TIMEOUT
+              value: "10000"
+            - name: OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT
+              value: "256"
+            - name: OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
+              value: "32"
+            - name: OTEL_SPAN_EVENT_COUNT_LIMIT
+              value: "32"
+            - name: OTEL_SPAN_LINK_COUNT_LIMIT
+              value: "32"
+            - name: OTEL_SEMCONV_STABILITY_OPT_IN
+              value: http
           readinessProbe:
             httpGet:
               path: /healthz
