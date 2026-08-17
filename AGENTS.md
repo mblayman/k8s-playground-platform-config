@@ -43,6 +43,14 @@ When changing a wrapper chart:
 - Run `mise run validate:all` from this repo.
 - Run `mise run validate:all` from `../k8s-playground-argocd-apps` if Argo wiring is changed.
 
+## Validation
+
+Keep `mise.toml` as thin task orchestration. Platform contract tests live in the locked PEP 723 uv script `scripts/validate.py`; do not add inline Python, Ruby, or large shell assertions back to mise tasks.
+
+Targeted `validate:*` tasks select one component from the same Python suite. Wrapper validation stages charts in `.validation/` and runs `helm dependency build` against committed `Chart.lock` files. Use `helm dependency update` only when intentionally refreshing a wrapper lock.
+
+If the PEP 723 dependency metadata changes, refresh and commit its lock with `uv lock --script scripts/validate.py`.
+
 ## Repo Responsibilities
 
 This repo owns Kubernetes desired state and bootstrap/local support configuration.

@@ -112,6 +112,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Added desired-state Grafana Alloy as a workload-adjacent collector, now under `platform/collectors/alloy` at wave `55` in the application root. Its DaemonSet selects Istio revision `stable`, discovers only its local node, scrapes authenticated kubelet and cAdvisor metrics every 30 seconds through a native sidecar, and remote-writes them to Mimir tenant `k8s-playground` with a `cluster=k8s-playground` external label. Its metrics-only OTLP/HTTP receiver on port `4318` requires strict mTLS, authorizes the application ServiceAccount for `POST /v1/metrics`, and preserves native OTLP through Mimir's `/otlp/v1/metrics` endpoint.
 - Published and deployed `mblayman/k8s-playground-service:0.2.0` with environment-driven OpenTelemetry, stable HTTP semantic conventions, trace-capable HTTP instrumentation, graceful telemetry shutdown, and a single `OTEL_SDK_DISABLED` switch for local development. Live Mimir queries verified bounded-cardinality metrics for normal, query-bearing, and `404` requests across both replicas; query strings were not exported, `/healthz` produced no telemetry, and no legacy HTTP metric family appeared.
 - Published and installed Tempo from the maintained `grafana-community/tempo` wrapper chart at observability wave `25`. The kind-sized single-binary backend enables multitenancy, uses a persistent local WAL, verifies HTTPS to MinIO, and has dedicated credentials live-verified to access only the existing `tempo` bucket. A synthetic OTLP/HTTP trace was ingested and queried for tenant `k8s-playground`, rejected without a tenant, and hidden from another tenant. The raw backend remains internal at `tempo-internal` but, like `mimir-internal`, is still cluster-reachable in kind; the future authenticated ingest gateway will enforce tenant `k8s-playground`. Alloy and application trace export remain disabled until that boundary is added.
+- Replaced inline Ruby manifest assertions with a locked Python/PyYAML uv validation suite while preserving targeted mise task names and native component validators. Wrapper validation now stages charts and consumes committed dependency locks without modifying source charts. The hosts-file manager and its safety tests also moved to Python, removing Ruby as a repository dependency.
 
 Current local cluster tasks:
 
@@ -826,7 +827,10 @@ platform/
     object-storage-config/
 
 scripts/
-  manage-kind-hosts.rb
+  manage-kind-hosts.py
+  test_manage_kind_hosts.py
+  validate.py
+  validate.py.lock
   render-metallb-kind-config.sh
   wait-for-rollout.sh
 ```
