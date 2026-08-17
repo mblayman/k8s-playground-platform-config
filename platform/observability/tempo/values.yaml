@@ -1,0 +1,105 @@
+tempo:
+  fullnameOverride: tempo-internal
+  replicas: 1
+
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+
+  tempo:
+    memBallastSizeMbs: 0
+    multitenancyEnabled: true
+    reportingEnabled: false
+    retention: 24h
+
+    extraArgs:
+      config.expand-env: true
+
+    extraEnv:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: tempo-object-storage-credentials
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: tempo-object-storage-credentials
+            key: AWS_SECRET_ACCESS_KEY
+
+    storage:
+      trace:
+        backend: s3
+        s3:
+          bucket: tempo
+          endpoint: minio.minio.svc.cluster.local:443
+          access_key: ${AWS_ACCESS_KEY_ID}
+          secret_key: ${AWS_SECRET_ACCESS_KEY}
+          insecure: false
+          forcepathstyle: true
+          tls_ca_path: /etc/tempo/minio-ca/ca.crt
+          tls_server_name: minio.minio.svc.cluster.local
+        wal:
+          path: /var/tempo/wal
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+    extraVolumeMounts:
+      - name: minio-ca
+        mountPath: /etc/tempo/minio-ca
+        readOnly: true
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  serviceAccount:
+    create: true
+    name: tempo
+    automountServiceAccountToken: false
+
+  service:
+    type: ClusterIP
+
+  persistence:
+    enabled: true
+    enableStatefulSetAutoDeletePVC: false
+    storageClassName: standard
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+
+  tempoQuery:
+    enabled: false
+
+  serviceMonitor:
+    enabled: false
+
+  networkPolicy:
+    enabled: false
+
+  extraVolumes:
+    - name: minio-ca
+      secret:
+        secretName: tempo-minio-client-ca
+        items:
+          - key: ca.crt
+            path: ca.crt

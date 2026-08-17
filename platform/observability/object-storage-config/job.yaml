@@ -36,6 +36,16 @@ spec:
                 secretKeyRef:
                   name: mimir-object-storage-credentials
                   key: AWS_SECRET_ACCESS_KEY
+            - name: TEMPO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tempo-object-storage-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: TEMPO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tempo-object-storage-credentials
+                  key: AWS_SECRET_ACCESS_KEY
           command:
             - /bin/sh
             - -ec
@@ -51,6 +61,10 @@ spec:
               mc --config-dir /tmp/mc admin policy create local mimir-bucket-access /etc/minio-policies/mimir.json
               mc --config-dir /tmp/mc admin user add local "$MIMIR_ACCESS_KEY" "$MIMIR_SECRET_KEY"
               mc --config-dir /tmp/mc admin policy attach local mimir-bucket-access --user "$MIMIR_ACCESS_KEY"
+
+              mc --config-dir /tmp/mc admin policy create local tempo-bucket-access /etc/minio-policies/tempo.json
+              mc --config-dir /tmp/mc admin user add local "$TEMPO_ACCESS_KEY" "$TEMPO_SECRET_KEY"
+              mc --config-dir /tmp/mc admin policy attach local tempo-bucket-access --user "$TEMPO_ACCESS_KEY"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

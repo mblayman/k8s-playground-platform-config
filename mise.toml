@@ -25,7 +25,13 @@ kubectl kustomize platform/argocd/config >/dev/null
 
 [tasks."validate:argocd-repositories"]
 description = "Render Argo CD repository registrations"
-run = "kubectl kustomize platform/argocd/repositories >/dev/null"
+run = '''
+kubectl kustomize platform/argocd/repositories | ruby -ryaml -e '
+  docs = YAML.load_stream($stdin.read).compact
+  repositories = docs.select { |doc| doc["kind"] == "Secret" }.to_h { |secret| [secret.dig("stringData", "name"), secret.dig("stringData", "url")] }
+  abort "Grafana Community Helm repository is missing" unless repositories["grafana-community"] == "https://grafana-community.github.io/helm-charts"
+'
+'''
 
 [tasks."validate:argocd-config"]
 description = "Render steady-state Argo CD server configuration"
@@ -61,14 +67,24 @@ validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
 mkdir -p "$validation_dir"
 kubectl kustomize platform/observability/object-storage-config >"$validation_dir/observability-object-storage-rendered.yaml"
 VALIDATION_DIR="$validation_dir" \
-ruby -ryaml -e '
+ruby -ryaml -rjson -e '
   docs = YAML.load_stream(File.read(File.join(ENV.fetch("VALIDATION_DIR"), "observability-object-storage-rendered.yaml"))).compact
   job = docs.find { |doc| doc["kind"] == "Job" && doc.dig("metadata", "name") == "observability-object-storage-config" }
+  policies = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "observability-object-storage-policies" }
   pod_spec = job.dig("spec", "template", "spec")
-  command = pod_spec.fetch("containers").first.fetch("command").last
+  container = pod_spec.fetch("containers").first
+  command = container.fetch("command").last
+  env = container.fetch("env").to_h { |entry| [entry.fetch("name"), entry] }
   ca_volume = pod_spec.fetch("volumes").find { |volume| volume["name"] == "minio-ca" }
+  tempo_policy = JSON.parse(policies.fetch("data").fetch("tempo.json"))
+  tempo_actions = tempo_policy.fetch("Statement").flat_map { |statement| statement.fetch("Action") }
+  tempo_resources = tempo_policy.fetch("Statement").flat_map { |statement| statement.fetch("Resource") }
   abort "Provisioning Job must use MinIO HTTPS without a nonstandard port" unless command.include?("https://minio.minio.svc.cluster.local") && !command.include?("http://minio") && !command.include?(":9000")
   abort "Provisioning Job does not trust minio-tls ca.crt" unless ca_volume.dig("secret", "secretName") == "minio-tls" && ca_volume.dig("secret", "items").any? { |item| item["key"] == "ca.crt" }
+  abort "Tempo object storage credentials are missing" unless env.dig("TEMPO_ACCESS_KEY", "valueFrom", "secretKeyRef", "name") == "tempo-object-storage-credentials" && env.dig("TEMPO_SECRET_KEY", "valueFrom", "secretKeyRef", "name") == "tempo-object-storage-credentials"
+  abort "Tempo user provisioning is incomplete" unless command.include?("tempo-bucket-access") && command.include?("/etc/minio-policies/tempo.json") && command.include?(%q(--user "$TEMPO_ACCESS_KEY"))
+  abort "Tempo policy is missing required object permissions" unless %w[s3:AbortMultipartUpload s3:DeleteObject s3:GetObject s3:GetObjectTagging s3:ListMultipartUploadParts s3:PutObject s3:PutObjectTagging].all? { |action| tempo_actions.include?(action) }
+  abort "Tempo policy must be scoped only to its bucket" unless tempo_resources.sort == ["arn:aws:s3:::tempo", "arn:aws:s3:::tempo/*"].sort
 '
 '''
 
@@ -145,6 +161,50 @@ docker run --rm \
   --mode validate \
   -c /etc/envoy/envoy.yaml \
   >/dev/null
+'''
+
+[tasks."validate:tempo"]
+description = "Render and validate the Tempo single-binary wrapper chart"
+run = '''
+validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+mkdir -p "$validation_dir"
+helm dependency update platform/observability/tempo >/dev/null
+helm lint platform/observability/tempo >/dev/null
+helm template tempo platform/observability/tempo \
+  --namespace observability \
+  >"$validation_dir/tempo-rendered.yaml"
+VALIDATION_DIR="$validation_dir" ruby -ryaml -e '
+  validation_dir = ENV.fetch("VALIDATION_DIR")
+  docs = YAML.load_stream(File.read(File.join(validation_dir, "tempo-rendered.yaml"))).compact
+  cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "tempo" }
+  certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "tempo-minio-client-ca" }
+  statefulset = docs.find { |doc| doc["kind"] == "StatefulSet" && doc.dig("metadata", "name") == "tempo-internal" }
+  service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "tempo-internal" }
+  config = cm.fetch("data").fetch("tempo.yaml")
+  pod_spec = statefulset.dig("spec", "template", "spec")
+  container = pod_spec.fetch("containers").find { |item| item["name"] == "tempo" }
+  env = container.fetch("env").to_h { |entry| [entry.fetch("name"), entry] }
+  ca_volume = pod_spec.fetch("volumes").find { |volume| volume["name"] == "minio-ca" }
+  claim = statefulset.dig("spec", "volumeClaimTemplates").fetch(0)
+  abort "Tempo must run one single-binary replica" unless statefulset.dig("spec", "replicas") == 1 && container["image"] == "docker.io/grafana/tempo:2.10.8"
+  abort "Tempo must remain an internal ClusterIP service" unless service.dig("spec", "type") == "ClusterIP" && docs.none? { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "tempo" }
+  abort "Tempo multitenancy is not enabled" unless config.include?("multitenancy_enabled: true")
+  abort "Tempo must use its dedicated MinIO bucket over verified HTTPS" unless config.include?("backend: s3") && config.include?("bucket: tempo") && config.include?("endpoint: minio.minio.svc.cluster.local:443") && config.include?("insecure: false") && config.include?("tls_ca_path: /etc/tempo/minio-ca/ca.crt") && config.include?("tls_server_name: minio.minio.svc.cluster.local")
+  abort "Tempo S3 credentials must come from its bootstrap Secret" unless env.dig("AWS_ACCESS_KEY_ID", "valueFrom", "secretKeyRef", "name") == "tempo-object-storage-credentials" && env.dig("AWS_SECRET_ACCESS_KEY", "valueFrom", "secretKeyRef", "name") == "tempo-object-storage-credentials" && container.fetch("args").include?("-config.expand-env=true")
+  abort "Tempo does not mount its MinIO CA" unless certificate.dig("spec", "secretName") == "tempo-minio-client-ca" && ca_volume.dig("secret", "secretName") == "tempo-minio-client-ca" && ca_volume.dig("secret", "items").any? { |item| item["key"] == "ca.crt" }
+  abort "Tempo WAL persistence is not configured" unless config.include?("path: /var/tempo/wal") && claim.dig("spec", "storageClassName") == "standard" && claim.dig("spec", "resources", "requests", "storage") == "5Gi"
+  abort "Tempo must not use the Kubernetes API token" unless pod_spec["automountServiceAccountToken"] == false
+  abort "Tempo container hardening is incomplete" unless container.dig("securityContext", "allowPrivilegeEscalation") == false && container.dig("securityContext", "readOnlyRootFilesystem") == true && container.dig("securityContext", "capabilities", "drop") == ["ALL"]
+  File.write(File.join(validation_dir, "tempo.yaml"), config)
+'
+docker run --rm \
+  -v "$validation_dir/tempo.yaml:/conf/tempo.yaml:ro" \
+  -e AWS_ACCESS_KEY_ID=test \
+  -e AWS_SECRET_ACCESS_KEY=test \
+  grafana/tempo:2.10.8 \
+  -config.file=/conf/tempo.yaml \
+  -config.expand-env=true \
+  -config.verify=true
 '''
 
 [tasks."validate:alloy"]
@@ -358,6 +418,7 @@ mise run validate:argocd-config
 mise run validate:minio
 mise run validate:observability-object-storage-config
 mise run validate:mimir
+mise run validate:tempo
 mise run validate:alloy
 mise run validate:grafana
 mise run validate:cert-manager
@@ -388,6 +449,7 @@ mise run metallb:bootstrap --name {{ usage.name }} --version {{ usage.metallb_ve
 mise run argocd:install --name {{ usage.name }}
 mise run minio:bootstrap-secrets --name {{ usage.name }}
 mise run mimir:bootstrap-secrets --name {{ usage.name }}
+mise run tempo:bootstrap-secrets --name {{ usage.name }}
 mise run grafana:bootstrap-secrets --name {{ usage.name }}
 mise run argocd:bootstrap-roots --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
@@ -445,6 +507,7 @@ flag "--mimir-namespace <mimir-namespace>" help="Mimir namespace" default="obser
 flag "--mimir-secret <mimir-secret>" help="Mimir object storage credentials Secret name" default="mimir-object-storage-credentials"
 flag "--mimir-access-key <mimir-access-key>" help="MinIO access key for the Mimir user" default="mimir"
 '''
+
 run = '''
 kubectl --context kind-{{ usage.name }} create namespace {{ usage.minio_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
 kubectl --context kind-{{ usage.name }} create namespace {{ usage.mimir_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
@@ -468,6 +531,44 @@ fi
 
 for namespace in {{ usage.minio_namespace }} {{ usage.mimir_namespace }}; do
   kubectl --context kind-{{ usage.name }} -n "$namespace" create secret generic {{ usage.mimir_secret }} \
+    --from-literal=AWS_ACCESS_KEY_ID="$access_key" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="$secret_key" \
+    --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+done
+'''
+
+[tasks."tempo:bootstrap-secrets"]
+description = "Create dedicated local-only Tempo object storage credentials before Argo sync"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--minio-namespace <minio-namespace>" help="MinIO namespace" default="minio"
+flag "--tempo-namespace <tempo-namespace>" help="Tempo namespace" default="observability"
+flag "--tempo-secret <tempo-secret>" help="Tempo object storage credentials Secret name" default="tempo-object-storage-credentials"
+flag "--tempo-access-key <tempo-access-key>" help="MinIO access key for the Tempo user" default="tempo"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.minio_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.tempo_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+
+access_key='{{ usage.tempo_access_key }}'
+secret_key=""
+
+for namespace in {{ usage.tempo_namespace }} {{ usage.minio_namespace }}; do
+  if kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.tempo_secret }} >/dev/null 2>&1; then
+    existing_access_key="$(kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.tempo_secret }} -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)"
+    if [ "$existing_access_key" = "$access_key" ]; then
+      secret_key="$(kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.tempo_secret }} -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)"
+      break
+    fi
+  fi
+done
+
+if [ -z "$secret_key" ]; then
+  secret_key="$(openssl rand -base64 32)"
+fi
+
+for namespace in {{ usage.minio_namespace }} {{ usage.tempo_namespace }}; do
+  kubectl --context kind-{{ usage.name }} -n "$namespace" create secret generic {{ usage.tempo_secret }} \
     --from-literal=AWS_ACCESS_KEY_ID="$access_key" \
     --from-literal=AWS_SECRET_ACCESS_KEY="$secret_key" \
     --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
@@ -839,7 +940,7 @@ flag "--shared-manifest <shared-manifest>" help="shared root Application manifes
 flag "--observability-manifest <observability-manifest>" help="observability root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/observability.yaml"
 flag "--application-manifest <application-manifest>" help="application-cluster root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-apps <root-apps>" help="space-separated root Argo CD Application names" default="k8s-playground-kind-root k8s-playground-kind-observability-root k8s-playground-kind-application-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories argocd-config cert-manager cert-manager-config minio observability-object-storage-config mimir grafana istio-base istiod istio-cni istio-ingressgateway istio-managementgateway alloy gateway-api-config management-gateway-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories argocd-config cert-manager cert-manager-config minio observability-object-storage-config mimir tempo grafana istio-base istiod istio-cni istio-ingressgateway istio-managementgateway alloy gateway-api-config management-gateway-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''

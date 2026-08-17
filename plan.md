@@ -110,6 +110,8 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Decided alerting should use Mimir ruler plus Alertmanager as the primary learning and production-aligned path, not Grafana Alerting as the default. Grafana remains the visualization UI and can display alert state, but Alertmanager concepts are the priority for platform-team readiness.
 - Decided on a functional observability namespace split: backend/UI components such as Mimir, Loki, Tempo, Pyroscope, Grafana, and Alertmanager-related resources live in `observability`; privileged node-level collectors such as Alloy log/node agents and Beyla live in `observability-collectors`; generic MinIO object storage remains in `minio`.
 - Added desired-state Grafana Alloy as a workload-adjacent collector, now under `platform/collectors/alloy` at wave `55` in the application root. Its DaemonSet selects Istio revision `stable`, discovers only its local node, scrapes authenticated kubelet and cAdvisor metrics every 30 seconds through a native sidecar, and remote-writes them to Mimir tenant `k8s-playground` with a `cluster=k8s-playground` external label. Its metrics-only OTLP/HTTP receiver on port `4318` requires strict mTLS, authorizes the application ServiceAccount for `POST /v1/metrics`, and preserves native OTLP through Mimir's `/otlp/v1/metrics` endpoint.
+- Published and deployed `mblayman/k8s-playground-service:0.2.0` with environment-driven OpenTelemetry, stable HTTP semantic conventions, trace-capable HTTP instrumentation, graceful telemetry shutdown, and a single `OTEL_SDK_DISABLED` switch for local development. Live Mimir queries verified bounded-cardinality metrics for normal, query-bearing, and `404` requests across both replicas; query strings were not exported, `/healthz` produced no telemetry, and no legacy HTTP metric family appeared.
+- Added desired-state Tempo as a maintained `grafana-community/tempo` wrapper chart at observability wave `25`. The kind-sized single-binary backend enables multitenancy, uses a persistent local WAL, verifies HTTPS to MinIO, and has dedicated credentials limited to the existing `tempo` bucket. The raw backend remains internal at `tempo-internal` but, like `mimir-internal`, is still cluster-reachable in kind; the future authenticated ingest gateway will enforce tenant `k8s-playground`. Alloy and application trace export remain disabled until that boundary is added and Tempo is live-verified.
 
 Current local cluster tasks:
 
@@ -177,6 +179,17 @@ mise run grafana:bootstrap-secrets
 mise run grafana:admin-password
 mise run grafana:status
 ```
+
+Current local bootstrap Secret tasks:
+
+```sh
+mise run minio:bootstrap-secrets
+mise run mimir:bootstrap-secrets
+mise run tempo:bootstrap-secrets
+mise run grafana:bootstrap-secrets
+```
+
+Run required bootstrap Secret tasks before pushing dependent desired state to an existing cluster. Fresh clusters run all of them automatically through `mise run cluster:create`.
 
 The tasks use `mise` task arguments with defaults so the rendered commands show concrete values, for example:
 
@@ -567,7 +580,7 @@ k8s-playground-kind-root                  # shared/substrate root
   -> Gateway API foundations and object-storage provisioning
 
 k8s-playground-kind-observability-root    # independently reconciled
-  -> Mimir, Grafana, future Tempo/Loki/Pyroscope/alerting
+  -> Mimir, Tempo, Grafana, future Loki/Pyroscope/alerting
 
 k8s-playground-kind-application-root      # independently reconciled
   -> Istio, user/management gateways, Alloy, k8s-playground-service
@@ -578,7 +591,7 @@ Ownership rules:
 - Keep `minio` in the existing shared root at wave `10`; never make it a child of the observability root.
 - Keep observability bucket/policy/user provisioning in the shared root with the object-storage owner, even though those resources are requested by observability consumers.
 - Move Alloy into the application-cluster root because it represents a collector that remains with applications when backends move elsewhere.
-- Move Mimir and Grafana wiring into the observability root, and add Tempo, Loki, Pyroscope, ruler, and Alertmanager there later.
+- Keep Mimir, Tempo, and Grafana wiring in the observability root, and add Loki, Pyroscope, ruler, and Alertmanager there later.
 - Add an `observability` Argo `AppProject` that restricts child applications to the platform-config source and the `observability` destination namespace. Keep the observability root itself in the parent/default project because it creates child `Application` resources in `argocd`.
 - Preserve existing Application names, Helm release names, namespaces, PVCs, and tracking ownership during the wiring migration to avoid workload recreation.
 - Preserve Argo's default child `Application` health behavior. Parent Applications declare desired child Applications; each child reconciles its own resources independently and reports its own sync/health state.
@@ -916,9 +929,12 @@ k8s-playground-argocd-apps/
 - [x] Establish the reusable logical cross-cluster transport on the existing Alloy-to-Mimir path: an unmeshed native-mTLS gateway on the conventional `mimir` hostname, exact Alloy certificate identity, explicit CA trust and live leaf-certificate reload, gateway-controlled tenant selection, route allowlisting, and bounded non-blocking retry/timeout behavior. Accept and document that `mimir-internal` remains directly reachable in kind until separate cluster networks or an enforcing CNI provide the production boundary.
 - [x] Verify the new separation end to end: observability backends remain unmeshed, MinIO remains generic/shared, Alloy survives rollout and mesh repair, Mimir still receives all node metrics, and all three Argo roots rebuild and settle without resource recreation.
 - [x] Verify runtime independence by making the observability root or Mimir temporarily unavailable: the application remains healthy, OTLP export stays non-blocking, and Alloy exhibits bounded retry/buffering behavior until the backend recovers.
-- [ ] Instrument the existing `k8s-playground-service` with bounded-cardinality OTLP metrics and single-service traces, excluding probe noise and sensitive request data.
+- [x] Instrument the existing `k8s-playground-service` with bounded-cardinality OTLP HTTP metrics and trace-capable HTTP instrumentation, excluding probe noise and sensitive request data; live-verify stable metrics from both replicas in Mimir.
+- [x] Configure Alloy's application OTLP metrics pipeline to route through the authenticated Mimir ingest boundary without duplicate telemetry.
+- [x] Add desired-state Tempo single-binary manifests, dedicated MinIO credentials and bucket policy, and observability-root Argo wiring at wave `25` while keeping trace export disabled.
 - [ ] Install Tempo with dedicated least-privilege access to the existing MinIO `tempo` bucket and explicit tenant `k8s-playground`.
-- [ ] Configure Alloy's application OTLP pipelines to route metrics through the authenticated Mimir ingest boundary and traces through the native-TLS Tempo ingest boundary without duplicate telemetry.
+- [ ] Configure Alloy's application OTLP traces pipeline to route through the native-TLS Tempo ingest boundary without duplicate telemetry.
+- [ ] Enable application OTLP trace export and validate single-service traces after Tempo and the Alloy trace pipeline are ready.
 - [ ] Provision Grafana's Tempo datasource and validate single-service trace search, timing, status, persistence, and metric-to-trace exemplars.
 - [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
 - [ ] Migrate Grafana from SQLite on a local PVC to PostgreSQL before adding replicas or claiming production-style high availability.
@@ -985,7 +1001,8 @@ k8s-playground-argocd-apps/
 - Backend/UI workloads in `observability` remain unmeshed by default so they model a potentially meshless dedicated observability cluster.
 - Alloy runs one ready DaemonSet pod on each kind node and each pod discovers only its own node.
 - Alloy can scrape its local kubelet and cAdvisor endpoints with verified TLS, bearer-token authentication, minimal RBAC, and no duplicate-series errors.
-- The existing Alloy DaemonSet accepts application OTLP through its ClusterIP Service without duplicating metrics or traces across Alloy pods.
+- The existing Alloy DaemonSet accepts application OTLP metrics through its ClusterIP Service without duplicating series across Alloy pods.
+- The same receiver routes application traces without duplicating spans after the Tempo pipeline is enabled.
 - Alloy runs as a selectively meshed application-cluster collector after Istio CNI, requires strict mTLS on OTLP port `4318`, and authorizes only approved application identities.
 - Alloy uses native TLS and real caller authentication, not only a tenant-routing header, when exporting across the logical application-to-observability cluster boundary.
 - The authenticated Mimir gateway is not represented as exclusive network enforcement in kind: `mimir-internal` remains cluster-reachable, while production isolates it on the observability cluster network and exposes only the gateway.
@@ -997,7 +1014,8 @@ k8s-playground-argocd-apps/
 - Loki receives Kubernetes container stdout/stderr logs collected directly by Alloy.
 - Pyroscope is available for profiling data.
 - Beyla is evaluated for eBPF-derived telemetry and enabled only if it adds useful local signal with acceptable complexity.
-- The existing application emits bounded-cardinality OTLP metrics and single-service traces without recording probe noise, request bodies, credentials, or other sensitive data.
+- The existing application emits bounded-cardinality OTLP HTTP metrics and has trace-capable HTTP instrumentation without recording probe noise, query strings, request bodies, credentials, or other sensitive data.
+- The application emits single-service traces after Tempo ingestion is available, with the same probe and sensitive-data exclusions as metrics.
 - Tempo stores application traces in MinIO for tenant `k8s-playground`, and Grafana can query traces across a Tempo pod restart.
 - Grafana links application metric exemplars to their corresponding Tempo traces.
 - Mimir ruler and Alertmanager are the primary alerting path for platform alerts.
@@ -1006,12 +1024,12 @@ k8s-playground-argocd-apps/
 - If a mesh HTTP/2 experiment is enabled, telemetry confirms ingress-gateway-to-app-sidecar protocol behavior over Istio mTLS.
 - If h2c is enabled in the app, the app still serves HTTP/1.1 clients unless there is a deliberate reason to remove that compatibility.
 
-## First App Target
+## Application Target
 
 Deploy `k8s-playground-service` using the image:
 
 ```text
-mblayman/k8s-playground-service:0.1.0
+mblayman/k8s-playground-service:0.2.0
 ```
 
 The tracer-bullet deployment sets:

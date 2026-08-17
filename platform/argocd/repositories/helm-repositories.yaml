@@ -45,3 +45,15 @@ stringData:
   name: grafana
   type: helm
   url: https://grafana.github.io/helm-charts
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-repo-helm-grafana-community
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: grafana-community
+  type: helm
+  url: https://grafana-community.github.io/helm-charts
