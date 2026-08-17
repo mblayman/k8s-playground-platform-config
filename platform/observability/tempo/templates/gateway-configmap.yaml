@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: tempo-gateway
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  envoy.yaml: |
+{{ .Files.Get "files/gateway-envoy.yaml" | indent 4 }}
+  server-certificate-sds.yaml: |
+{{ .Files.Get "files/gateway-server-certificate-sds.yaml" | indent 4 }}
+  client-validation-sds.yaml: |
+{{ .Files.Get "files/gateway-client-validation-sds.yaml" | indent 4 }}

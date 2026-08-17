@@ -166,7 +166,8 @@ docker run --rm \
 [tasks."validate:tempo"]
 description = "Render and validate the Tempo single-binary wrapper chart"
 run = '''
-validation_dir="${TMPDIR:-/tmp}/k8s-playground-platform-config-validation"
+validation_dir="$PWD/.validation/tempo"
+trap 'rm -rf "$validation_dir"' EXIT
 mkdir -p "$validation_dir"
 helm dependency update platform/observability/tempo >/dev/null
 helm lint platform/observability/tempo >/dev/null
@@ -179,15 +180,33 @@ VALIDATION_DIR="$validation_dir" ruby -ryaml -e '
   cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "tempo" }
   certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "tempo-minio-client-ca" }
   statefulset = docs.find { |doc| doc["kind"] == "StatefulSet" && doc.dig("metadata", "name") == "tempo-internal" }
-  service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "tempo-internal" }
+  internal_service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "tempo-internal" }
+  gateway_cm = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "tempo-gateway" }
+  gateway_certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "tempo-gateway" }
+  gateway_deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "tempo-gateway" }
+  gateway_pdb = docs.find { |doc| doc["kind"] == "PodDisruptionBudget" && doc.dig("metadata", "name") == "tempo-gateway" }
+  gateway_service = docs.find { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "tempo" }
   config = cm.fetch("data").fetch("tempo.yaml")
+  envoy = gateway_cm.fetch("data").fetch("envoy.yaml")
+  server_sds = gateway_cm.fetch("data").fetch("server-certificate-sds.yaml")
+  client_sds = gateway_cm.fetch("data").fetch("client-validation-sds.yaml")
+  envoy_config = YAML.safe_load(envoy)
+  server_sds_config = YAML.safe_load(server_sds)
+  client_sds_config = YAML.safe_load(client_sds)
+  ingest_listener = envoy_config.dig("static_resources", "listeners").find { |listener| listener["name"] == "ingest_https" }
+  filter_chain = ingest_listener.fetch("filter_chains").fetch(0)
+  downstream_tls = filter_chain.dig("transport_socket", "typed_config")
+  http_manager = filter_chain.fetch("filters").find { |filter| filter["name"] == "envoy.filters.network.http_connection_manager" }.fetch("typed_config")
+  virtual_host = http_manager.dig("route_config", "virtual_hosts").fetch(0)
+  routes = virtual_host.fetch("routes")
+  backend = envoy_config.dig("static_resources", "clusters").find { |cluster| cluster["name"] == "tempo_internal" }
   pod_spec = statefulset.dig("spec", "template", "spec")
   container = pod_spec.fetch("containers").find { |item| item["name"] == "tempo" }
   env = container.fetch("env").to_h { |entry| [entry.fetch("name"), entry] }
   ca_volume = pod_spec.fetch("volumes").find { |volume| volume["name"] == "minio-ca" }
   claim = statefulset.dig("spec", "volumeClaimTemplates").fetch(0)
   abort "Tempo must run one single-binary replica" unless statefulset.dig("spec", "replicas") == 1 && container["image"] == "docker.io/grafana/tempo:2.10.8"
-  abort "Tempo must remain an internal ClusterIP service" unless service.dig("spec", "type") == "ClusterIP" && docs.none? { |doc| doc["kind"] == "Service" && doc.dig("metadata", "name") == "tempo" }
+  abort "Raw Tempo must remain internal" unless internal_service.dig("spec", "type") == "ClusterIP" && internal_service.dig("spec", "selector", "app.kubernetes.io/name") == "tempo"
   abort "Tempo multitenancy is not enabled" unless config.include?("multitenancy_enabled: true")
   abort "Tempo must use its dedicated MinIO bucket over verified HTTPS" unless config.include?("backend: s3") && config.include?("bucket: tempo") && config.include?("endpoint: minio.minio.svc.cluster.local:443") && config.include?("insecure: false") && config.include?("tls_ca_path: /etc/tempo/minio-ca/ca.crt") && config.include?("tls_server_name: minio.minio.svc.cluster.local")
   abort "Tempo S3 credentials must come from its bootstrap Secret" unless env.dig("AWS_ACCESS_KEY_ID", "valueFrom", "secretKeyRef", "name") == "tempo-object-storage-credentials" && env.dig("AWS_SECRET_ACCESS_KEY", "valueFrom", "secretKeyRef", "name") == "tempo-object-storage-credentials" && container.fetch("args").include?("-config.expand-env=true")
@@ -195,7 +214,27 @@ VALIDATION_DIR="$validation_dir" ruby -ryaml -e '
   abort "Tempo WAL persistence is not configured" unless config.include?("path: /var/tempo/wal") && claim.dig("spec", "storageClassName") == "standard" && claim.dig("spec", "resources", "requests", "storage") == "5Gi"
   abort "Tempo must not use the Kubernetes API token" unless pod_spec["automountServiceAccountToken"] == false
   abort "Tempo container hardening is incomplete" unless container.dig("securityContext", "allowPrivilegeEscalation") == false && container.dig("securityContext", "readOnlyRootFilesystem") == true && container.dig("securityContext", "capabilities", "drop") == ["ALL"]
+  abort "Tempo gateway Certificate rotation is not configured" unless gateway_certificate.dig("spec", "secretName") == "tempo-gateway-tls" && gateway_certificate.dig("spec", "duration") == "2160h" && gateway_certificate.dig("spec", "renewBefore") == "720h" && gateway_certificate.dig("spec", "privateKey", "rotationPolicy") == "Always" && gateway_certificate.dig("spec", "dnsNames").include?("tempo.observability.svc.cluster.local")
+  abort "Tempo gateway must run two replicas" unless gateway_deployment.dig("spec", "replicas") == 2 && gateway_pdb.dig("spec", "minAvailable") == 1
+  abort "Tempo gateway config changes must roll its pods" unless gateway_deployment.dig("spec", "template", "metadata", "annotations", "checksum/config")
+  abort "Tempo must expose only authenticated HTTPS" unless gateway_service.dig("spec", "selector", "app.kubernetes.io/name") == "tempo-gateway" && gateway_service.dig("spec", "ports") == [{"name" => "https", "port" => 443, "targetPort" => "https", "appProtocol" => "https"}]
+  abort "Tempo gateway does not require client certificates" unless downstream_tls["require_client_certificate"] == true && downstream_tls["disable_stateless_session_resumption"] == true
+  expected_sans = [{"san_type" => "URI", "matcher" => {"exact" => "spiffe://k8s-playground/collectors/alloy"}}]
+  abort "Tempo gateway does not enforce the exact Alloy certificate identity" unless client_sds_config.dig("resources", 0, "validation_context", "match_typed_subject_alt_names") == expected_sans
+  expected_trace_match = {"path" => "/v1/traces", "headers" => [{"name" => ":method", "string_match" => {"exact" => "POST"}}]}
+  abort "Tempo gateway must allow only POST /v1/traces" unless routes.length == 2 && routes.dig(0, "match") == expected_trace_match && routes.dig(0, "route", "cluster") == "tempo_internal" && routes.dig(1, "match") == {"prefix" => "/"} && routes.dig(1, "direct_response", "status") == 404
+  expected_tenant_header = [{"header" => {"key" => "X-Scope-OrgID", "value" => "k8s-playground"}, "append_action" => "OVERWRITE_IF_EXISTS_OR_ADD"}]
+  abort "Tempo gateway must control the tenant" unless virtual_host["request_headers_to_add"] == expected_tenant_header
+  backend_socket = backend.dig("load_assignment", "endpoints", 0, "lb_endpoints", 0, "endpoint", "address", "socket_address")
+  abort "Tempo gateway must target only the internal OTLP/HTTP receiver" unless backend_socket == {"address" => "tempo-internal.observability.svc.cluster.local", "port_value" => 4318}
+  server_sds_path = downstream_tls.dig("common_tls_context", "tls_certificate_sds_secret_configs", 0, "sds_config", "path_config_source", "path")
+  client_sds_path = downstream_tls.dig("common_tls_context", "validation_context_sds_secret_config", "sds_config", "path_config_source", "path")
+  abort "Tempo gateway does not use filesystem SDS for certificate rotation" unless server_sds_path == "/etc/envoy/server-certificate-sds.yaml" && client_sds_path == "/etc/envoy/client-validation-sds.yaml" && server_sds_config.dig("resources", 0, "tls_certificate", "watched_directory", "path") == "/etc/envoy/tls" && client_sds_config.dig("resources", 0, "validation_context", "watched_directory", "path") == "/etc/envoy/tls"
+  abort "Tempo gateway does not cap downstream connections" unless envoy.include?("envoy.resource_monitors.global_downstream_max_connections") && envoy.include?("max_active_downstream_connections: 1024")
   File.write(File.join(validation_dir, "tempo.yaml"), config)
+  File.write(File.join(validation_dir, "tempo-gateway-envoy.yaml"), envoy)
+  File.write(File.join(validation_dir, "tempo-gateway-server-certificate-sds.yaml"), server_sds)
+  File.write(File.join(validation_dir, "tempo-gateway-client-validation-sds.yaml"), client_sds)
 '
 docker run --rm \
   -v "$validation_dir/tempo.yaml:/conf/tempo.yaml:ro" \
@@ -205,6 +244,27 @@ docker run --rm \
   -config.file=/conf/tempo.yaml \
   -config.expand-env=true \
   -config.verify=true
+mkdir -p "$validation_dir/tempo-gateway-tls"
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$validation_dir/tempo-gateway-tls/tls.key" \
+  -out "$validation_dir/tempo-gateway-tls/tls.crt" \
+  -subj /CN=tempo.observability.svc.cluster.local \
+  -days 1 \
+  >/dev/null 2>&1
+openssl x509 \
+  -in "$validation_dir/tempo-gateway-tls/tls.crt" \
+  -out "$validation_dir/tempo-gateway-tls/ca.crt"
+chmod 0644 "$validation_dir/tempo-gateway-tls/tls.key"
+docker run --rm \
+  --user 0:0 \
+  -v "$validation_dir/tempo-gateway-envoy.yaml:/etc/envoy/envoy.yaml:ro" \
+  -v "$validation_dir/tempo-gateway-server-certificate-sds.yaml:/etc/envoy/server-certificate-sds.yaml:ro" \
+  -v "$validation_dir/tempo-gateway-client-validation-sds.yaml:/etc/envoy/client-validation-sds.yaml:ro" \
+  -v "$validation_dir/tempo-gateway-tls:/etc/envoy/tls:ro" \
+  envoyproxy/envoy:v1.36.4 \
+  --mode validate \
+  -c /etc/envoy/envoy.yaml \
+  >/dev/null
 '''
 
 [tasks."validate:alloy"]
@@ -226,6 +286,7 @@ ruby -ryaml -e '
   peer_authentication = docs.find { |doc| doc["kind"] == "PeerAuthentication" && doc.dig("metadata", "name") == "alloy-otlp" }
   authorization_policy = docs.find { |doc| doc["kind"] == "AuthorizationPolicy" && doc.dig("metadata", "name") == "alloy-otlp" }
   mimir_certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "alloy-mimir-client" }
+  tempo_certificate = docs.find { |doc| doc["kind"] == "Certificate" && doc.dig("metadata", "name") == "alloy-tempo-client" }
   config = cm.fetch("data").fetch("config.alloy")
   otlp_port = service.fetch("spec").fetch("ports").find { |port| port["name"] == "otlp-http" }
   rule = authorization_policy.dig("spec", "rules").fetch(0)
@@ -237,6 +298,8 @@ ruby -ryaml -e '
   abort "Alloy OTLP metrics pipeline is incomplete" unless config.include?(%q(otelcol.receiver.otlp "application")) && config.include?(%q(endpoint = "0.0.0.0:4318")) && config.include?(%q(otelcol.processor.memory_limiter "application")) && config.include?(%q(otelcol.processor.batch "application")) && config.include?(%q(otelcol.exporter.otlphttp "mimir"))
   abort "Application metrics must remain OTLP through Mimir ingestion" unless config.include?(%q(endpoint = "https://mimir.observability.svc.cluster.local/otlp")) && config.include?(%q(metrics = [otelcol.exporter.otlphttp.mimir.input])) && !config.include?(%q(otelcol.exporter.prometheus "application"))
   abort "Alloy Mimir client Certificate rotation is not configured" unless mimir_certificate.dig("spec", "secretName") == "alloy-mimir-client-tls" && mimir_certificate.dig("spec", "uris") == ["spiffe://k8s-playground/collectors/alloy"] && mimir_certificate.dig("spec", "duration") == "2160h" && mimir_certificate.dig("spec", "renewBefore") == "720h" && mimir_certificate.dig("spec", "privateKey", "rotationPolicy") == "Always"
+  abort "Alloy Tempo client Certificate rotation is not configured" unless tempo_certificate.dig("spec", "secretName") == "alloy-tempo-client-tls" && tempo_certificate.dig("spec", "uris") == ["spiffe://k8s-playground/collectors/alloy"] && tempo_certificate.dig("spec", "duration") == "2160h" && tempo_certificate.dig("spec", "renewBefore") == "720h" && tempo_certificate.dig("spec", "privateKey", "rotationPolicy") == "Always"
+  abort "Alloy does not mount its Tempo client identity" unless daemonset.dig("spec", "template", "spec", "volumes").any? { |volume| volume["name"] == "tempo-client-tls" && volume.dig("secret", "secretName") == "alloy-tempo-client-tls" } && daemonset.dig("spec", "template", "spec", "containers").find { |item| item["name"] == "alloy" }.fetch("volumeMounts").any? { |mount| mount["name"] == "tempo-client-tls" && mount["mountPath"] == "/var/run/tempo-tls" && mount["readOnly"] == true }
   abort "Alloy must use authenticated HTTPS for both Mimir write protocols" unless config.include?(%q(url = "https://mimir.observability.svc.cluster.local/api/v1/push")) && config.scan(%q(ca_file     = "/var/run/mimir-tls/ca.crt")).length >= 1 && config.scan(%q(cert_file   = "/var/run/mimir-tls/tls.crt")).length >= 1 && config.scan(%q(key_file    = "/var/run/mimir-tls/tls.key")).length >= 1 && config.include?(%q(reload_interval = "1m")) && !config.include?("http://mimir.observability")
   abort "Alloy must not set the Mimir tenant header directly" if config.include?("X-Scope-OrgID")
   abort "Alloy Mimir exporters must have bounded non-blocking retries" unless config.include?(%q(remote_timeout = "10s")) && config.include?(%q(sample_age_limit = "15m")) && config.include?(%q(max_elapsed_time = "5m")) && config.include?(%q(block_on_overflow = false)) && config.include?(%q(wait_for_result   = false))

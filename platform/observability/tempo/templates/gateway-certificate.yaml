@@ -1,0 +1,29 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tempo-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: tempo-gateway
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  secretName: tempo-gateway-tls
+  duration: 2160h
+  renewBefore: 720h
+  dnsNames:
+    - tempo
+    - tempo.observability
+    - tempo.observability.svc
+    - tempo.observability.svc.cluster.local
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - server auth

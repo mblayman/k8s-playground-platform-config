@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: gateway
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: tempo-gateway
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      appProtocol: https

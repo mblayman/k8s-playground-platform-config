@@ -165,6 +165,9 @@ alloy:
         - name: mimir-client-tls
           mountPath: /var/run/mimir-tls
           readOnly: true
+        - name: tempo-client-tls
+          mountPath: /var/run/tempo-tls
+          readOnly: true
 
   configReloader:
     securityContext:
@@ -193,6 +196,9 @@ alloy:
         - name: mimir-client-tls
           secret:
             secretName: alloy-mimir-client-tls
+        - name: tempo-client-tls
+          secret:
+            secretName: alloy-tempo-client-tls
 
   global:
     podSecurityContext:
