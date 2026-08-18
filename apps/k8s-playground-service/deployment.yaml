@@ -59,7 +59,7 @@ spec:
             - name: OTEL_METRICS_EXPORTER
               value: otlp
             - name: OTEL_TRACES_EXPORTER
-              value: none
+              value: otlp
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://alloy.observability-collectors.svc.cluster.local:4318
             - name: OTEL_EXPORTER_OTLP_PROTOCOL

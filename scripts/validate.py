@@ -1211,7 +1211,7 @@ def validate_k8s_playground_service(case: unittest.TestCase, harness: Harness) -
         and env.get("OTEL_EXPORTER_OTLP_PROTOCOL") == "http/protobuf",
         "application metrics must use OTLP/HTTP through Alloy",
     )
-    case.assertEqual(env.get("OTEL_TRACES_EXPORTER"), "none", "traces must remain disabled until Tempo is available")
+    case.assertEqual(env.get("OTEL_TRACES_EXPORTER"), "otlp", "application traces must use OTLP through Alloy")
     case.assertEqual(env.get("OTEL_SEMCONV_STABILITY_OPT_IN"), "http", "stable HTTP semantic conventions are not enabled")
     case.assertTrue(
         env.get("OTEL_EXPORTER_OTLP_TIMEOUT") == "10000"
