@@ -46,6 +46,7 @@ alloy:
 
           output {
             metrics = [otelcol.processor.memory_limiter.application.input]
+            traces  = [otelcol.processor.memory_limiter.application.input]
           }
         }
 
@@ -56,6 +57,7 @@ alloy:
 
           output {
             metrics = [otelcol.processor.batch.application.input]
+            traces  = [otelcol.processor.batch.application_traces.input]
           }
         }
 
@@ -66,6 +68,16 @@ alloy:
 
           output {
             metrics = [otelcol.exporter.otlphttp.mimir.input]
+          }
+        }
+
+        otelcol.processor.batch "application_traces" {
+          timeout             = "1s"
+          send_batch_size     = 512
+          send_batch_max_size = 1024
+
+          output {
+            traces = [otelcol.exporter.otlphttp.tempo.input]
           }
         }
 
@@ -93,6 +105,37 @@ alloy:
             enabled           = true
             num_consumers     = 3
             queue_size        = 1000
+            block_on_overflow = false
+            wait_for_result   = false
+          }
+        }
+
+        otelcol.exporter.otlphttp "tempo" {
+          client {
+            endpoint = "https://tempo.observability.svc.cluster.local"
+            timeout  = "10s"
+
+            tls {
+              ca_file         = "/var/run/tempo-tls/ca.crt"
+              cert_file       = "/var/run/tempo-tls/tls.crt"
+              key_file        = "/var/run/tempo-tls/tls.key"
+              server_name     = "tempo.observability.svc.cluster.local"
+              reload_interval = "1m"
+            }
+          }
+
+          retry_on_failure {
+            enabled          = true
+            initial_interval = "1s"
+            max_interval     = "10s"
+            max_elapsed_time = "5m"
+          }
+
+          sending_queue {
+            enabled           = true
+            num_consumers     = 2
+            queue_size        = 16777216
+            sizer             = "bytes"
             block_on_overflow = false
             wait_for_result   = false
           }

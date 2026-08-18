@@ -980,8 +980,12 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
     )
     case.assertEqual(
         dig(rule, "to", 0, "operation"),
-        {"ports": ["4318"], "methods": ["POST"], "paths": ["/v1/metrics"]},
-        "Alloy OTLP authorization must allow only POST /v1/metrics on 4318",
+        {
+            "ports": ["4318"],
+            "methods": ["POST"],
+            "paths": ["/v1/metrics", "/v1/traces"],
+        },
+        "Alloy OTLP authorization must allow only metrics and traces from the application",
     )
     case.assertTrue(
         all(
@@ -999,8 +1003,18 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
     case.assertTrue(
         'endpoint = "https://mimir.observability.svc.cluster.local/otlp"' in config
         and "metrics = [otelcol.exporter.otlphttp.mimir.input]" in config
+        and "metrics = [otelcol.exporter.otlphttp.tempo.input]" not in config
         and 'otelcol.exporter.prometheus "application"' not in config,
         "Application metrics must remain OTLP through Mimir ingestion",
+    )
+    case.assertTrue(
+        'otelcol.processor.batch "application_traces"' in config
+        and "traces  = [otelcol.processor.memory_limiter.application.input]" in config
+        and "traces  = [otelcol.processor.batch.application_traces.input]" in config
+        and "traces = [otelcol.exporter.otlphttp.tempo.input]" in config
+        and config.count('otelcol.exporter.otlphttp "tempo"') == 1
+        and "traces = [otelcol.exporter.otlphttp.mimir.input]" not in config,
+        "Application traces must have one dedicated Tempo pipeline",
     )
     for certificate, secret, label in (
         (mimir_certificate, "alloy-mimir-client-tls", "Mimir"),
@@ -1033,21 +1047,29 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
         and "http://mimir.observability" not in config,
         "Alloy must use authenticated HTTPS for both Mimir write protocols",
     )
-    case.assertNotIn("X-Scope-OrgID", config, "Alloy must not set the Mimir tenant header directly")
     case.assertTrue(
-        all(
-            value in config
-            for value in (
-                'remote_timeout = "10s"',
-                'sample_age_limit = "15m"',
-                'max_elapsed_time = "5m"',
-                "block_on_overflow = false",
-                "wait_for_result   = false",
-            )
-        ),
-        "Alloy Mimir exporters must have bounded non-blocking retries",
+        'endpoint = "https://tempo.observability.svc.cluster.local"' in config
+        and 'timeout  = "10s"' in config
+        and 'ca_file         = "/var/run/tempo-tls/ca.crt"' in config
+        and 'cert_file       = "/var/run/tempo-tls/tls.crt"' in config
+        and 'key_file        = "/var/run/tempo-tls/tls.key"' in config
+        and 'server_name     = "tempo.observability.svc.cluster.local"' in config
+        and config.count('reload_interval = "1m"') >= 2
+        and 'queue_size        = 16777216' in config
+        and 'sizer             = "bytes"' in config
+        and "http://tempo.observability" not in config,
+        "Alloy must use bounded authenticated HTTPS for Tempo traces",
     )
-    case.assertNotRegex(config, r"(?m)^\s*(logs|traces)\s*=", "Alloy must not accept unrouted OTLP logs or traces")
+    case.assertNotIn("X-Scope-OrgID", config, "Alloy must not choose backend tenants directly")
+    case.assertTrue(
+        'remote_timeout = "10s"' in config
+        and 'sample_age_limit = "15m"' in config
+        and config.count('max_elapsed_time = "5m"') == 2
+        and config.count("block_on_overflow = false") == 2
+        and config.count("wait_for_result   = false") == 2,
+        "Alloy exporters must have bounded non-blocking retries",
+    )
+    case.assertNotRegex(config, r"(?m)^\s*logs\s*=", "Alloy must not accept unrouted OTLP logs")
     config_path = write_native_config(harness.component_dir("alloy"), "config.alloy", config)
     harness.run(
         case,
