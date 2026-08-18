@@ -634,6 +634,12 @@ def validate_mimir(case: unittest.TestCase, harness: Harness) -> None:
         (client_sds, "Mimir gateway client SDS config"),
     ):
         case.assertIsInstance(value, str, f"{label} is missing")
+    runtime_config = yaml.safe_load(runtime)
+    case.assertEqual(
+        dig(runtime_config, "overrides", "k8s-playground", "max_global_exemplars_per_user"),
+        1000,
+        "Mimir exemplar ingestion must have a bounded tenant limit",
+    )
     ca_volume = named(
         case,
         dig(deployment, "spec", "template", "spec", "volumes"),
@@ -1146,7 +1152,38 @@ def validate_grafana(case: unittest.TestCase, harness: Harness) -> None:
         lint=True,
     )
     service = resource(case, docs, "Service", "grafana")
+    grafana_config = resource(case, docs, "ConfigMap", "grafana")
     case.assertEqual(dig(service, "spec", "type"), "ClusterIP", "Grafana Service is not a ClusterIP")
+    datasource_content = dig(grafana_config, "data", "datasources.yaml")
+    case.assertIsInstance(datasource_content, str, "Grafana datasource provisioning is missing")
+    datasource_config = yaml.safe_load(datasource_content)
+    datasources = dig(datasource_config, "datasources")
+    mimir_datasource = named(case, datasources, "Mimir", "Mimir datasource is missing")
+    tempo_datasource = named(case, datasources, "Tempo", "Tempo datasource is missing")
+    case.assertEqual(
+        dig(mimir_datasource, "jsonData", "exemplarTraceIdDestinations"),
+        [{"datasourceUid": "tempo", "name": "trace_id"}],
+        "Mimir exemplars must link trace_id to Tempo",
+    )
+    case.assertTrue(
+        tempo_datasource.get("uid") == "tempo"
+        and tempo_datasource.get("type") == "tempo"
+        and tempo_datasource.get("access") == "proxy"
+        and tempo_datasource.get("url") == "http://tempo-internal.observability.svc.cluster.local:3200"
+        and tempo_datasource.get("editable") is False,
+        "Grafana Tempo datasource must use the internal query endpoint",
+    )
+    case.assertTrue(
+        dig(tempo_datasource, "jsonData", "httpHeaderName1") == "X-Scope-OrgID"
+        and dig(tempo_datasource, "secureJsonData", "httpHeaderValue1") == "k8s-playground",
+        "Tempo datasource tenant header is missing",
+    )
+    case.assertTrue(
+        dig(tempo_datasource, "jsonData", "nodeGraph", "enabled") is True
+        and dig(tempo_datasource, "jsonData", "search", "hide") is False
+        and dig(tempo_datasource, "jsonData", "traceQuery", "timeShiftEnabled") is True,
+        "Tempo datasource trace exploration is incomplete",
+    )
     config = "\n".join(
         str(value)
         for doc in docs

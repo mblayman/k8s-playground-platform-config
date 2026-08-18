@@ -68,6 +68,8 @@ grafana:
       deleteDatasources:
         - name: Mimir
           orgId: 1
+        - name: Tempo
+          orgId: 1
       datasources:
         - name: Mimir
           uid: mimir
@@ -82,6 +84,27 @@ grafana:
             timeInterval: 30s
             manageAlerts: false
             httpHeaderName1: X-Scope-OrgID
+            exemplarTraceIdDestinations:
+              - datasourceUid: tempo
+                name: trace_id
+          secureJsonData:
+            httpHeaderValue1: k8s-playground
+        - name: Tempo
+          uid: tempo
+          type: tempo
+          access: proxy
+          url: http://tempo-internal.observability.svc.cluster.local:3200
+          editable: false
+          jsonData:
+            httpHeaderName1: X-Scope-OrgID
+            nodeGraph:
+              enabled: true
+            search:
+              hide: false
+            traceQuery:
+              timeShiftEnabled: true
+              spanStartTimeShift: -1h
+              spanEndTimeShift: 1h
           secureJsonData:
             httpHeaderValue1: k8s-playground
 

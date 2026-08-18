@@ -74,4 +74,5 @@ data:
       file: /etc/mimir/runtime.yaml
   runtime.yaml: |
     overrides:
-      k8s-playground: {}
+      k8s-playground:
+        max_global_exemplars_per_user: 1000
