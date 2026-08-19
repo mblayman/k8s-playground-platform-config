@@ -70,6 +70,8 @@ grafana:
           orgId: 1
         - name: Tempo
           orgId: 1
+        - name: Loki
+          orgId: 1
       datasources:
         - name: Mimir
           uid: mimir
@@ -101,10 +103,38 @@ grafana:
               enabled: true
             search:
               hide: false
+            tracesToLogsV2:
+              datasourceUid: loki
+              spanStartTimeShift: -1m
+              spanEndTimeShift: 1m
+              tags:
+                - key: k8s.namespace.name
+                  value: namespace
+                - key: k8s.pod.name
+                  value: pod
+              filterByTraceID: true
+              filterBySpanID: true
+              customQuery: false
             traceQuery:
               timeShiftEnabled: true
               spanStartTimeShift: -1h
               spanEndTimeShift: 1h
+          secureJsonData:
+            httpHeaderValue1: k8s-playground
+        - name: Loki
+          uid: loki
+          type: loki
+          access: proxy
+          url: http://loki-internal.observability.svc.cluster.local:3100
+          editable: false
+          jsonData:
+            httpHeaderName1: X-Scope-OrgID
+            maxLines: 1000
+            derivedFields:
+              - name: TraceID
+                matcherRegex: '"trace_id":"([a-f0-9]{32})"'
+                datasourceUid: tempo
+                url: '$${__value.raw}'
           secureJsonData:
             httpHeaderValue1: k8s-playground
 

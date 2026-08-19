@@ -114,6 +114,7 @@ Build a serious local Kubernetes playground that uses mature, well-tested Istio 
 - Published and installed Tempo from the maintained `grafana-community/tempo` wrapper chart at observability wave `25`. The kind-sized single-binary backend enables multitenancy, uses a persistent local WAL, verifies HTTPS to MinIO, and has dedicated credentials live-verified to access only the existing `tempo` bucket. Its native-mTLS gateway enforces the exact Alloy identity, tenant `k8s-playground`, and `POST /v1/traces`; server and client certificate rotation was live-verified without pod replacement. The raw backend remains internal at `tempo-internal` but, like `mimir-internal`, is still cluster-reachable in kind.
 - Replaced inline Ruby manifest assertions with a locked Python/PyYAML uv validation suite while preserving targeted mise task names and native component validators. Wrapper validation now stages charts and consumes committed dependency locks without modifying source charts. The hosts-file manager and its safety tests also moved to Python, removing Ruby as a repository dependency.
 - Added and live-verified the desired-state Alloy trace pipeline with dedicated batching, bounded non-blocking retries, native mTLS export through the authenticated Tempo gateway, exact application identity authorization, and single-span delivery without cross-tenant visibility. Application trace export is live-verified across both replicas with caller context preservation, `200` and `404` status attributes, positive timing, no duplicate spans, no private query or baggage values, and no `/healthz` telemetry.
+- Provisioned and live-verified Grafana's Tempo datasource with tenant-scoped internal queries and Mimir `trace_id` exemplar links. Grafana TraceQL search returned application traces with matching timing, status, and span identity; Mimir produced exemplars for both replicas and both validated HTTP statuses; traces remained queryable across Tempo pod replacement with objects present in MinIO; and post-restart ingestion recovered normally.
 
 Current local cluster tasks:
 
@@ -941,7 +942,7 @@ k8s-playground-argocd-apps/
 - [x] Establish and live-verify the authenticated native-mTLS Tempo ingest gateway with exact Alloy identity, tenant enforcement, route allowlisting, and filesystem certificate reload.
 - [x] Configure Alloy's application OTLP traces pipeline to route through the native-TLS Tempo ingest boundary without duplicate telemetry.
 - [x] Enable application OTLP trace export and validate single-service traces after Tempo and the Alloy trace pipeline are ready.
-- [ ] Provision Grafana's Tempo datasource and validate single-service trace search, timing, status, persistence, and metric-to-trace exemplars.
+- [x] Provision Grafana's Tempo datasource and validate single-service trace search, timing, status, persistence, and metric-to-trace exemplars.
 - [ ] Install Loki and configure Alloy to collect Kubernetes stdout/stderr logs directly rather than via OTLP logs.
 - [ ] Migrate Grafana from SQLite on a local PVC to PostgreSQL before adding replicas or claiming production-style high availability.
 - [ ] Install Keycloak in a later identity-learning phase and integrate Grafana through generic OAuth/OIDC with explicit role mapping and a tested break-glass login path.

@@ -1,0 +1,29 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: loki-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: loki-gateway
+    app.kubernetes.io/part-of: k8s-playground
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  secretName: loki-gateway-tls
+  duration: 2160h
+  renewBefore: 720h
+  dnsNames:
+    - loki
+    - loki.observability
+    - loki.observability.svc
+    - loki.observability.svc.cluster.local
+  issuerRef:
+    name: local-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - server auth

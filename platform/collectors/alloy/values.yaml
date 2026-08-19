@@ -14,6 +14,99 @@ alloy:
           }
         }
 
+        discovery.kubernetes "pod_logs" {
+          role = "pod"
+
+          selectors {
+            role  = "pod"
+            field = "spec.nodeName=" + sys.env("NODE_NAME")
+          }
+        }
+
+        discovery.relabel "pod_logs" {
+          targets = discovery.kubernetes.pod_logs.targets
+
+          rule {
+            source_labels = ["__meta_kubernetes_namespace"]
+            target_label  = "namespace"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_name"]
+            target_label  = "container"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_node_name"]
+            target_label  = "node"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+            target_label  = "app"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_container_name"]
+            separator     = "/"
+            target_label  = "job"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+            separator     = "/"
+            target_label  = "__path__"
+            replacement   = "/var/log/pods/*$1/*.log"
+          }
+        }
+
+        loki.source.file "pod_logs" {
+          targets                 = discovery.relabel.pod_logs.output
+          forward_to              = [loki.process.pod_logs.receiver]
+          tail_from_end           = true
+          on_positions_file_error = "restart_from_end"
+        }
+
+        loki.process "pod_logs" {
+          stage.cri {}
+
+          stage.label_drop {
+            values = ["filename"]
+          }
+
+          forward_to = [loki.write.backend.receiver]
+        }
+
+        loki.write "backend" {
+          external_labels = {
+            cluster = "k8s-playground",
+          }
+          max_streams = 10000
+
+          endpoint {
+            url                 = "https://loki.observability.svc.cluster.local/loki/api/v1/push"
+            batch_size          = "1MiB"
+            batch_wait          = "1s"
+            remote_timeout      = "10s"
+            min_backoff_period  = "500ms"
+            max_backoff_period  = "10s"
+            max_backoff_retries = 10
+
+            tls_config {
+              ca_file     = "/var/run/loki-tls/ca.crt"
+              cert_file   = "/var/run/loki-tls/tls.crt"
+              key_file    = "/var/run/loki-tls/tls.key"
+              server_name = "loki.observability.svc.cluster.local"
+              min_version = "TLS12"
+            }
+          }
+        }
+
         prometheus.remote_write "mimir" {
           external_labels = {
             cluster = "k8s-playground",
@@ -211,6 +304,12 @@ alloy:
         - name: tempo-client-tls
           mountPath: /var/run/tempo-tls
           readOnly: true
+        - name: loki-client-tls
+          mountPath: /var/run/loki-tls
+          readOnly: true
+        - name: pod-logs
+          mountPath: /var/log/pods
+          readOnly: true
 
   configReloader:
     securityContext:
@@ -231,7 +330,9 @@ alloy:
     volumes:
       extra:
         - name: storage
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/alloy
+            type: DirectoryOrCreate
         - name: kubelet-serving-ca
           hostPath:
             path: /var/lib/kubelet/pki/kubelet.crt
@@ -242,6 +343,35 @@ alloy:
         - name: tempo-client-tls
           secret:
             secretName: alloy-tempo-client-tls
+        - name: loki-client-tls
+          secret:
+            secretName: alloy-loki-client-tls
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+    initContainers:
+      - name: initialize-storage
+        image: docker.io/library/busybox:1.37.0
+        command:
+          - /bin/sh
+          - -ec
+          - chown 473:473 /var/lib/alloy
+        securityContext:
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+            add:
+              - CHOWN
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+          - name: storage
+            mountPath: /var/lib/alloy
 
   global:
     podSecurityContext:
@@ -259,6 +389,7 @@ alloy:
           - ""
         resources:
           - nodes
+          - pods
         verbs:
           - get
           - list

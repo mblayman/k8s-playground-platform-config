@@ -39,6 +39,10 @@ run = "uv run --locked --script scripts/validate.py mimir"
 description = "Render and validate the Tempo single-binary wrapper chart"
 run = "uv run --locked --script scripts/validate.py tempo"
 
+[tasks."validate:loki"]
+description = "Render and validate the Loki monolithic wrapper chart"
+run = "uv run --locked --script scripts/validate.py loki"
+
 [tasks."validate:alloy"]
 description = "Render the Alloy wrapper chart and validate its runtime config"
 run = "uv run --locked --script scripts/validate.py alloy"
@@ -147,6 +151,7 @@ mise run argocd:install --name {{ usage.name }}
 mise run minio:bootstrap-secrets --name {{ usage.name }}
 mise run mimir:bootstrap-secrets --name {{ usage.name }}
 mise run tempo:bootstrap-secrets --name {{ usage.name }}
+mise run loki:bootstrap-secrets --name {{ usage.name }}
 mise run grafana:bootstrap-secrets --name {{ usage.name }}
 mise run argocd:bootstrap-roots --name {{ usage.name }}
 mise run istio:wait --name {{ usage.name }}
@@ -266,6 +271,44 @@ fi
 
 for namespace in {{ usage.minio_namespace }} {{ usage.tempo_namespace }}; do
   kubectl --context kind-{{ usage.name }} -n "$namespace" create secret generic {{ usage.tempo_secret }} \
+    --from-literal=AWS_ACCESS_KEY_ID="$access_key" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="$secret_key" \
+    --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+done
+'''
+
+[tasks."loki:bootstrap-secrets"]
+description = "Create dedicated local-only Loki object storage credentials before Argo sync"
+usage = '''
+flag "--name <name>" help="kind cluster name" default="k8s-playground"
+flag "--minio-namespace <minio-namespace>" help="MinIO namespace" default="minio"
+flag "--loki-namespace <loki-namespace>" help="Loki namespace" default="observability"
+flag "--loki-secret <loki-secret>" help="Loki object storage credentials Secret name" default="loki-object-storage-credentials"
+flag "--loki-access-key <loki-access-key>" help="MinIO access key for the Loki user" default="loki"
+'''
+run = '''
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.minio_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+kubectl --context kind-{{ usage.name }} create namespace {{ usage.loki_namespace }} --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
+
+access_key='{{ usage.loki_access_key }}'
+secret_key=""
+
+for namespace in {{ usage.loki_namespace }} {{ usage.minio_namespace }}; do
+  if kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.loki_secret }} >/dev/null 2>&1; then
+    existing_access_key="$(kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.loki_secret }} -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)"
+    if [ "$existing_access_key" = "$access_key" ]; then
+      secret_key="$(kubectl --context kind-{{ usage.name }} -n "$namespace" get secret {{ usage.loki_secret }} -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)"
+      break
+    fi
+  fi
+done
+
+if [ -z "$secret_key" ]; then
+  secret_key="$(openssl rand -base64 32)"
+fi
+
+for namespace in {{ usage.minio_namespace }} {{ usage.loki_namespace }}; do
+  kubectl --context kind-{{ usage.name }} -n "$namespace" create secret generic {{ usage.loki_secret }} \
     --from-literal=AWS_ACCESS_KEY_ID="$access_key" \
     --from-literal=AWS_SECRET_ACCESS_KEY="$secret_key" \
     --dry-run=client -o yaml | kubectl --context kind-{{ usage.name }} apply -f -
@@ -637,7 +680,7 @@ flag "--shared-manifest <shared-manifest>" help="shared root Application manifes
 flag "--observability-manifest <observability-manifest>" help="observability root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/observability.yaml"
 flag "--application-manifest <application-manifest>" help="application-cluster root Application manifest path or URL" default="https://raw.githubusercontent.com/mblayman/k8s-playground-argocd-apps/main/clusters/kind/application.yaml"
 flag "--root-apps <root-apps>" help="space-separated root Argo CD Application names" default="k8s-playground-kind-root k8s-playground-kind-observability-root k8s-playground-kind-application-root"
-flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories argocd-config cert-manager cert-manager-config minio observability-object-storage-config mimir tempo grafana istio-base istiod istio-cni istio-ingressgateway istio-managementgateway alloy gateway-api-config management-gateway-config k8s-playground-service"
+flag "--child-apps <child-apps>" help="space-separated child Argo CD Application names" default="gateway-api-crds argocd-repositories argocd-config cert-manager cert-manager-config minio observability-object-storage-config mimir tempo loki grafana istio-base istiod istio-cni istio-ingressgateway istio-managementgateway alloy gateway-api-config management-gateway-config k8s-playground-service"
 flag "--timeout <timeout>" help="wait timeout in seconds for each Application condition" default="600"
 '''
 run = '''

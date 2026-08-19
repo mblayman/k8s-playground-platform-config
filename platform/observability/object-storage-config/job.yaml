@@ -46,6 +46,16 @@ spec:
                 secretKeyRef:
                   name: tempo-object-storage-credentials
                   key: AWS_SECRET_ACCESS_KEY
+            - name: LOKI_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: loki-object-storage-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: LOKI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: loki-object-storage-credentials
+                  key: AWS_SECRET_ACCESS_KEY
           command:
             - /bin/sh
             - -ec
@@ -65,6 +75,10 @@ spec:
               mc --config-dir /tmp/mc admin policy create local tempo-bucket-access /etc/minio-policies/tempo.json
               mc --config-dir /tmp/mc admin user add local "$TEMPO_ACCESS_KEY" "$TEMPO_SECRET_KEY"
               mc --config-dir /tmp/mc admin policy attach local tempo-bucket-access --user "$TEMPO_ACCESS_KEY"
+
+              mc --config-dir /tmp/mc admin policy create local loki-bucket-access /etc/minio-policies/loki.json
+              mc --config-dir /tmp/mc admin user add local "$LOKI_ACCESS_KEY" "$LOKI_SECRET_KEY"
+              mc --config-dir /tmp/mc admin policy attach local loki-bucket-access --user "$LOKI_ACCESS_KEY"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

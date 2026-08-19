@@ -40,6 +40,7 @@ COMPONENTS = (
     "observability-object-storage-config",
     "mimir",
     "tempo",
+    "loki",
     "alloy",
     "grafana",
     "cert-manager",
@@ -63,6 +64,7 @@ DESCRIPTIONS = {
     "observability-object-storage-config": "validate object storage bucket config",
     "mimir": "validate Mimir manifests and native configs",
     "tempo": "validate the Tempo wrapper chart and native configs",
+    "loki": "validate the Loki wrapper chart and native configs",
     "alloy": "validate the Alloy wrapper chart and runtime config",
     "grafana": "validate Grafana dashboards and provisioning",
     "cert-manager": "render the cert-manager wrapper chart",
@@ -434,6 +436,48 @@ def validate_object_storage(case: unittest.TestCase, harness: Harness) -> None:
         sorted(tempo_resources),
         sorted(["arn:aws:s3:::tempo", "arn:aws:s3:::tempo/*"]),
         "Tempo policy must be scoped only to its bucket",
+    )
+    loki_policy_json = dig(policies, "data", "loki.json")
+    case.assertIsInstance(loki_policy_json, str, "Loki policy data is missing")
+    try:
+        loki_policy = json.loads(loki_policy_json)
+    except json.JSONDecodeError as error:
+        case.fail(f"Loki policy is not valid JSON: {error}")
+    loki_statements = loki_policy.get("Statement", [])
+    case.assertIsInstance(loki_statements, list, "Loki policy Statement must be a list")
+    loki_actions = {action for statement in loki_statements for action in statement.get("Action", [])}
+    loki_resources = [item for statement in loki_statements for item in statement.get("Resource", [])]
+    case.assertTrue(
+        dig(env.get("LOKI_ACCESS_KEY"), "valueFrom", "secretKeyRef", "name")
+        == "loki-object-storage-credentials"
+        and dig(env.get("LOKI_SECRET_KEY"), "valueFrom", "secretKeyRef", "name")
+        == "loki-object-storage-credentials",
+        "Loki object storage credentials are missing",
+    )
+    case.assertTrue(
+        "loki-bucket-access" in command
+        and "/etc/minio-policies/loki.json" in command
+        and '--user "$LOKI_ACCESS_KEY"' in command,
+        "Loki user provisioning is incomplete",
+    )
+    case.assertEqual(
+        loki_actions,
+        {
+            "s3:AbortMultipartUpload",
+            "s3:DeleteObject",
+            "s3:GetBucketLocation",
+            "s3:GetObject",
+            "s3:ListBucket",
+            "s3:ListBucketMultipartUploads",
+            "s3:ListMultipartUploadParts",
+            "s3:PutObject",
+        },
+        "Loki policy permissions are not least-privilege",
+    )
+    case.assertEqual(
+        sorted(loki_resources),
+        sorted(["arn:aws:s3:::loki", "arn:aws:s3:::loki/*"]),
+        "Loki policy must be scoped only to its bucket",
     )
 
 
@@ -941,6 +985,194 @@ def validate_tempo(case: unittest.TestCase, harness: Harness) -> None:
     )
 
 
+def validate_loki(case: unittest.TestCase, harness: Harness) -> None:
+    docs = harness.helm_render(
+        case,
+        "loki",
+        "platform/observability/loki",
+        "loki",
+        "observability",
+        lint=True,
+    )
+    config_map = resource(case, docs, "ConfigMap", "loki")
+    runtime_map = resource(case, docs, "ConfigMap", "loki-runtime")
+    statefulset = resource(case, docs, "StatefulSet", "loki-internal")
+    internal_service = resource(case, docs, "Service", "loki-internal")
+    minio_certificate = resource(case, docs, "Certificate", "loki-minio-client-ca")
+    gateway_map = resource(case, docs, "ConfigMap", "loki-gateway")
+    gateway_certificate = resource(case, docs, "Certificate", "loki-gateway")
+    gateway_deployment = resource(case, docs, "Deployment", "loki-gateway")
+    gateway_pdb = resource(case, docs, "PodDisruptionBudget", "loki-gateway")
+    gateway_service = resource(case, docs, "Service", "loki")
+    config = dig(config_map, "data", "config.yaml")
+    runtime = dig(runtime_map, "data", "runtime-config.yaml")
+    envoy = dig(gateway_map, "data", "envoy.yaml")
+    server_sds = dig(gateway_map, "data", "server-certificate-sds.yaml")
+    client_sds = dig(gateway_map, "data", "client-validation-sds.yaml")
+    for value, label in (
+        (config, "Loki config"),
+        (runtime, "Loki runtime config"),
+        (envoy, "Loki gateway Envoy config"),
+        (server_sds, "Loki gateway server SDS config"),
+        (client_sds, "Loki gateway client SDS config"),
+    ):
+        case.assertIsInstance(value, str, f"{label} is missing")
+    pod_spec = dig(statefulset, "spec", "template", "spec")
+    container = named(case, dig(pod_spec, "containers"), "loki", "Loki container is missing")
+    env = {
+        entry.get("name"): entry
+        for entry in container.get("env", [])
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    ca_volume = named(case, dig(pod_spec, "volumes"), "minio-ca", "Loki MinIO CA volume is missing")
+    ca_mount = named(case, container.get("volumeMounts"), "minio-ca", "Loki MinIO CA mount is missing")
+    claims = dig(statefulset, "spec", "volumeClaimTemplates")
+    case.assertIsInstance(claims, list, "Loki volume claim template is missing")
+    case.assertEqual(dig(statefulset, "spec", "replicas"), 1, "Loki must run one monolithic replica")
+    case.assertEqual(container.get("image"), "docker.io/grafana/loki:3.7.6", "Loki image version is not pinned")
+    case.assertEqual(dig(pod_spec, "automountServiceAccountToken"), False, "Loki must not mount an API token")
+    case.assertTrue(
+        dig(internal_service, "spec", "type") == "ClusterIP"
+        and any(port.get("name") == "http-metrics" and port.get("port") == 3100 for port in dig(internal_service, "spec", "ports") or []),
+        "Raw Loki must remain internal on port 3100",
+    )
+    case.assertTrue(
+        claims
+        and dig(claims[0], "spec", "storageClassName") == "standard"
+        and dig(claims[0], "spec", "resources", "requests", "storage") == "5Gi"
+        and dig(statefulset, "spec", "persistentVolumeClaimRetentionPolicy") is None,
+        "Loki working storage must use a retained 5Gi PVC",
+    )
+    case.assertTrue(
+        dig(env.get("AWS_ACCESS_KEY_ID"), "valueFrom", "secretKeyRef", "name")
+        == "loki-object-storage-credentials"
+        and dig(env.get("AWS_SECRET_ACCESS_KEY"), "valueFrom", "secretKeyRef", "name")
+        == "loki-object-storage-credentials",
+        "Loki S3 credentials must come from its bootstrap Secret",
+    )
+    case.assertTrue(
+        dig(minio_certificate, "spec", "secretName") == "loki-minio-client-ca"
+        and dig(ca_volume, "secret", "secretName") == "loki-minio-client-ca"
+        and ca_mount.get("mountPath") == "/etc/loki/minio-ca"
+        and ca_mount.get("readOnly") is True,
+        "Loki must mount the MinIO CA",
+    )
+    case.assertTrue(
+        all(
+            value in config
+            for value in (
+                "auth_enabled: true",
+                "replication_factor: 1",
+                "store: tsdb",
+                "schema: v13",
+                "period: 24h",
+                "bucketnames: loki",
+                "endpoint: minio.minio.svc.cluster.local:443",
+                "ca_file: /etc/loki/minio-ca/ca.crt",
+                "s3forcepathstyle: true",
+                "insecure: false",
+                "retention_period: 24h",
+                "retention_enabled: true",
+                "delete_request_store: s3",
+            )
+        ),
+        "Loki TSDB, retention, or verified MinIO storage is incomplete",
+    )
+    case.assertNotIn("http://minio", config, "Loki must not use plaintext MinIO transport")
+    case.assertFalse(
+        any(doc.get("kind") in {"ClusterRole", "ClusterRoleBinding"} for doc in docs),
+        "Monolithic Loki must not create cluster-wide RBAC",
+    )
+    case.assertEqual(dig(gateway_deployment, "spec", "replicas"), 2, "Loki gateway must run two replicas")
+    case.assertEqual(dig(gateway_pdb, "spec", "minAvailable"), 1, "Loki gateway disruption budget must retain one replica")
+    case.assertTrue(
+        dig(gateway_service, "spec", "selector", "app.kubernetes.io/name") == "loki-gateway"
+        and dig(gateway_service, "spec", "ports")
+        == [{"name": "https", "port": 443, "targetPort": "https", "appProtocol": "https"}],
+        "Loki must expose only authenticated HTTPS for writes",
+    )
+    case.assertTrue(
+        dig(gateway_certificate, "spec", "secretName") == "loki-gateway-tls"
+        and dig(gateway_certificate, "spec", "duration") == "2160h"
+        and dig(gateway_certificate, "spec", "renewBefore") == "720h"
+        and dig(gateway_certificate, "spec", "privateKey", "rotationPolicy") == "Always",
+        "Loki gateway Certificate rotation is not configured",
+    )
+    loki_routes = [
+        {
+            "match": {
+                "path": "/loki/api/v1/push",
+                "headers": [{"name": ":method", "string_match": {"exact": "POST"}}],
+            },
+            "route": {"cluster": "loki_internal", "timeout": "30s"},
+        },
+        {"match": {"prefix": "/"}, "direct_response": {"status": 404}},
+    ]
+    validate_envoy_structural(
+        case,
+        envoy,
+        server_sds,
+        client_sds,
+        component="Loki",
+        backend_name="loki_internal",
+        backend_address="loki-internal.observability.svc.cluster.local",
+        backend_port=3100,
+        expected_routes=loki_routes,
+    )
+    directory = harness.component_dir("loki")
+    config_path = write_native_config(directory, "config.yaml", config)
+    runtime_path = write_native_config(directory, "runtime-config.yaml", runtime)
+    envoy_path = write_native_config(directory, "gateway-envoy.yaml", envoy)
+    server_path = write_native_config(directory, "gateway-server-certificate-sds.yaml", server_sds)
+    client_path = write_native_config(directory, "gateway-client-validation-sds.yaml", client_sds)
+    tls_dir = openssl_fixture(case, harness, "loki", "loki.observability.svc.cluster.local")
+    harness.run(
+        case,
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{config_path}:/etc/loki/config/config.yaml:ro",
+            "-v",
+            f"{runtime_path}:/etc/loki/runtime-config/runtime-config.yaml:ro",
+            "-v",
+            f"{tls_dir}:/etc/loki/minio-ca:ro",
+            "-e",
+            "AWS_ACCESS_KEY_ID=test",
+            "-e",
+            "AWS_SECRET_ACCESS_KEY=test",
+            "grafana/loki:3.7.6",
+            "-config.file=/etc/loki/config/config.yaml",
+            "-config.expand-env=true",
+            "-verify-config=true",
+        ],
+    )
+    harness.run(
+        case,
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "-v",
+            f"{envoy_path}:/etc/envoy/envoy.yaml:ro",
+            "-v",
+            f"{server_path}:/etc/envoy/server-certificate-sds.yaml:ro",
+            "-v",
+            f"{client_path}:/etc/envoy/client-validation-sds.yaml:ro",
+            "-v",
+            f"{tls_dir}:/etc/envoy/tls:ro",
+            "envoyproxy/envoy:v1.36.4",
+            "--mode",
+            "validate",
+            "-c",
+            "/etc/envoy/envoy.yaml",
+        ],
+    )
+
+
 def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
     docs = harness.helm_render(
         case,
@@ -954,8 +1186,10 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
     service = resource(case, docs, "Service", "alloy")
     peer_authentication = resource(case, docs, "PeerAuthentication", "alloy-otlp")
     authorization_policy = resource(case, docs, "AuthorizationPolicy", "alloy-otlp")
+    cluster_role = resource(case, docs, "ClusterRole", "alloy")
     mimir_certificate = resource(case, docs, "Certificate", "alloy-mimir-client")
     tempo_certificate = resource(case, docs, "Certificate", "alloy-tempo-client")
+    loki_certificate = resource(case, docs, "Certificate", "alloy-loki-client")
     config = dig(cm, "data", "config.alloy")
     case.assertIsInstance(config, str, "Alloy runtime config is missing")
     otlp_port = named(case, dig(service, "spec", "ports"), "otlp-http", "Alloy OTLP/HTTP Service port is missing")
@@ -1025,6 +1259,7 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
     for certificate, secret, label in (
         (mimir_certificate, "alloy-mimir-client-tls", "Mimir"),
         (tempo_certificate, "alloy-tempo-client-tls", "Tempo"),
+        (loki_certificate, "alloy-loki-client-tls", "Loki"),
     ):
         case.assertTrue(
             dig(certificate, "spec", "secretName") == secret
@@ -1036,14 +1271,58 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
         )
     pod_spec = dig(daemonset, "spec", "template", "spec")
     tempo_volume = named(case, dig(pod_spec, "volumes"), "tempo-client-tls", "Alloy Tempo client TLS volume is missing")
+    loki_volume = named(case, dig(pod_spec, "volumes"), "loki-client-tls", "Alloy Loki client TLS volume is missing")
+    pod_logs_volume = named(case, dig(pod_spec, "volumes"), "pod-logs", "Alloy pod logs volume is missing")
+    storage_volume = named(case, dig(pod_spec, "volumes"), "storage", "Alloy storage volume is missing")
     alloy_container = named(case, dig(pod_spec, "containers"), "alloy", "Alloy container is missing")
     tempo_mount = named(case, alloy_container.get("volumeMounts"), "tempo-client-tls", "Alloy Tempo client TLS mount is missing")
+    loki_mount = named(case, alloy_container.get("volumeMounts"), "loki-client-tls", "Alloy Loki client TLS mount is missing")
+    pod_logs_mount = named(case, alloy_container.get("volumeMounts"), "pod-logs", "Alloy pod logs mount is missing")
     case.assertTrue(
         dig(tempo_volume, "secret", "secretName") == "alloy-tempo-client-tls"
         and tempo_mount.get("mountPath") == "/var/run/tempo-tls"
         and tempo_mount.get("readOnly") is True,
         "Alloy does not mount its Tempo client identity",
     )
+    case.assertTrue(
+        dig(loki_volume, "secret", "secretName") == "alloy-loki-client-tls"
+        and loki_mount.get("mountPath") == "/var/run/loki-tls"
+        and loki_mount.get("readOnly") is True,
+        "Alloy does not mount its Loki client identity",
+    )
+    case.assertTrue(
+        dig(pod_logs_volume, "hostPath", "path") == "/var/log/pods"
+        and dig(pod_logs_volume, "hostPath", "type") == "Directory"
+        and pod_logs_mount.get("mountPath") == "/var/log/pods"
+        and pod_logs_mount.get("readOnly") is True,
+        "Alloy must mount only the node pod log directory read-only",
+    )
+    case.assertEqual(
+        dig(storage_volume, "hostPath"),
+        {"path": "/var/lib/alloy", "type": "DirectoryOrCreate"},
+        "Alloy positions must use node-persistent storage",
+    )
+    init_container = named(
+        case,
+        dig(pod_spec, "initContainers"),
+        "initialize-storage",
+        "Alloy storage initializer is missing",
+    )
+    case.assertTrue(
+        dig(init_container, "securityContext", "runAsUser") == 0
+        and dig(init_container, "securityContext", "allowPrivilegeEscalation") is False
+        and dig(init_container, "securityContext", "capabilities", "add") == ["CHOWN"]
+        and dig(init_container, "securityContext", "capabilities", "drop") == ["ALL"],
+        "Alloy storage initialization must grant only CHOWN",
+    )
+    rbac_rules = dig(cluster_role, "rules") or []
+    core_resources = {
+        item
+        for rule in rbac_rules
+        if rule.get("apiGroups") == [""]
+        for item in rule.get("resources", [])
+    }
+    case.assertTrue("pods" in core_resources and "pods/log" not in core_resources, "File log collection needs pod discovery, not pod log API access")
     case.assertTrue(
         'url = "https://mimir.observability.svc.cluster.local/api/v1/push"' in config
         and config.count('ca_file     = "/var/run/mimir-tls/ca.crt"') >= 1
@@ -1066,7 +1345,35 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
         and "http://tempo.observability" not in config,
         "Alloy must use bounded authenticated HTTPS for Tempo traces",
     )
+    case.assertTrue(
+        'discovery.kubernetes "pod_logs"' in config
+        and 'field = "spec.nodeName=" + sys.env("NODE_NAME")' in config
+        and 'replacement   = "/var/log/pods/*$1/*.log"' in config
+        and 'loki.source.file "pod_logs"' in config
+        and 'loki.process "pod_logs"' in config
+        and "stage.cri {}" in config
+        and 'values = ["filename"]' in config
+        and 'tail_from_end           = true' in config
+        and 'on_positions_file_error = "restart_from_end"' in config,
+        "Alloy node-local CRI file collection is incomplete",
+    )
+    case.assertTrue(
+        'loki.write "backend"' in config
+        and 'url                 = "https://loki.observability.svc.cluster.local/loki/api/v1/push"' in config
+        and 'max_streams = 10000' in config
+        and 'batch_size          = "1MiB"' in config
+        and 'remote_timeout      = "10s"' in config
+        and 'max_backoff_period  = "10s"' in config
+        and 'max_backoff_retries = 10' in config
+        and 'ca_file     = "/var/run/loki-tls/ca.crt"' in config
+        and 'cert_file   = "/var/run/loki-tls/tls.crt"' in config
+        and 'key_file    = "/var/run/loki-tls/tls.key"' in config
+        and 'server_name = "loki.observability.svc.cluster.local"' in config
+        and "http://loki.observability" not in config,
+        "Alloy must use bounded authenticated native Loki writes",
+    )
     case.assertNotIn("X-Scope-OrgID", config, "Alloy must not choose backend tenants directly")
+    case.assertNotIn("tenant_id", config, "Alloy must not choose the Loki tenant directly")
     case.assertTrue(
         'remote_timeout = "10s"' in config
         and 'sample_age_limit = "15m"' in config
@@ -1160,6 +1467,7 @@ def validate_grafana(case: unittest.TestCase, harness: Harness) -> None:
     datasources = dig(datasource_config, "datasources")
     mimir_datasource = named(case, datasources, "Mimir", "Mimir datasource is missing")
     tempo_datasource = named(case, datasources, "Tempo", "Tempo datasource is missing")
+    loki_datasource = named(case, datasources, "Loki", "Loki datasource is missing")
     case.assertEqual(
         dig(mimir_datasource, "jsonData", "exemplarTraceIdDestinations"),
         [{"datasourceUid": "tempo", "name": "trace_id"}],
@@ -1183,6 +1491,41 @@ def validate_grafana(case: unittest.TestCase, harness: Harness) -> None:
         and dig(tempo_datasource, "jsonData", "search", "hide") is False
         and dig(tempo_datasource, "jsonData", "traceQuery", "timeShiftEnabled") is True,
         "Tempo datasource trace exploration is incomplete",
+    )
+    case.assertEqual(
+        dig(tempo_datasource, "jsonData", "tracesToLogsV2"),
+        {
+            "datasourceUid": "loki",
+            "spanStartTimeShift": "-1m",
+            "spanEndTimeShift": "1m",
+            "tags": [
+                {"key": "k8s.namespace.name", "value": "namespace"},
+                {"key": "k8s.pod.name", "value": "pod"},
+            ],
+            "filterByTraceID": True,
+            "filterBySpanID": True,
+            "customQuery": False,
+        },
+        "Tempo traces must link to Loki by namespace and pod",
+    )
+    case.assertTrue(
+        loki_datasource.get("uid") == "loki"
+        and loki_datasource.get("type") == "loki"
+        and loki_datasource.get("access") == "proxy"
+        and loki_datasource.get("url") == "http://loki-internal.observability.svc.cluster.local:3100"
+        and loki_datasource.get("editable") is False
+        and dig(loki_datasource, "jsonData", "httpHeaderName1") == "X-Scope-OrgID"
+        and dig(loki_datasource, "jsonData", "derivedFields")
+        == [
+            {
+                "name": "TraceID",
+                "matcherRegex": '"trace_id":"([a-f0-9]{32})"',
+                "datasourceUid": "tempo",
+                "url": "$${__value.raw}",
+            }
+        ]
+        and dig(loki_datasource, "secureJsonData", "httpHeaderValue1") == "k8s-playground",
+        "Grafana Loki datasource must use the tenant-scoped internal query endpoint",
     )
     config = "\n".join(
         str(value)
@@ -1237,7 +1580,7 @@ def validate_k8s_playground_service(case: unittest.TestCase, harness: Harness) -
     }
     case.assertEqual(
         container.get("image"),
-        "mblayman/k8s-playground-service:0.2.0",
+        "mblayman/k8s-playground-service:0.3.0",
         "k8s-playground-service image is not the OpenTelemetry release",
     )
     case.assertTrue(
@@ -1283,6 +1626,7 @@ VALIDATORS: dict[str, Callable[[unittest.TestCase, Harness], None]] = {
     "observability-object-storage-config": validate_object_storage,
     "mimir": validate_mimir,
     "tempo": validate_tempo,
+    "loki": validate_loki,
     "alloy": validate_alloy,
     "grafana": validate_grafana,
     "cert-manager": validate_cert_manager,
