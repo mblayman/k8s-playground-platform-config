@@ -1297,6 +1297,11 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
         and pod_logs_mount.get("readOnly") is True,
         "Alloy must mount only the node pod log directory read-only",
     )
+    case.assertTrue(
+        dig(alloy_container, "securityContext", "capabilities") == {"drop": ["ALL"]}
+        and dig(pod_spec, "securityContext", "supplementalGroups") == [0],
+        "Alloy must use the root supplemental group without Linux capabilities to read pod logs",
+    )
     case.assertEqual(
         dig(storage_volume, "hostPath"),
         {"path": "/var/lib/alloy", "type": "DirectoryOrCreate"},
@@ -1349,7 +1354,11 @@ def validate_alloy(case: unittest.TestCase, harness: Harness) -> None:
         'discovery.kubernetes "pod_logs"' in config
         and 'field = "spec.nodeName=" + sys.env("NODE_NAME")' in config
         and 'replacement   = "/var/log/pods/*$1/*.log"' in config
+        and 'local.file_match "pod_logs"' in config
+        and "path_targets = discovery.relabel.pod_logs.output" in config
+        and 'sync_period  = "5s"' in config
         and 'loki.source.file "pod_logs"' in config
+        and "targets                 = local.file_match.pod_logs.targets" in config
         and 'loki.process "pod_logs"' in config
         and "stage.cri {}" in config
         and 'values = ["filename"]' in config

@@ -65,8 +65,13 @@ alloy:
           }
         }
 
+        local.file_match "pod_logs" {
+          path_targets = discovery.relabel.pod_logs.output
+          sync_period  = "5s"
+        }
+
         loki.source.file "pod_logs" {
-          targets                 = discovery.relabel.pod_logs.output
+          targets                 = local.file_match.pod_logs.targets
           forward_to              = [loki.process.pod_logs.receiver]
           tail_from_end           = true
           on_positions_file_error = "restart_from_end"
@@ -379,6 +384,8 @@ alloy:
       runAsUser: 473
       runAsGroup: 473
       fsGroup: 473
+      supplementalGroups:
+        - 0
       seccompProfile:
         type: RuntimeDefault
 
